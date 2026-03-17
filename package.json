@@ -3,7 +3,7 @@
 	"license": "MIT",
 	"workspaces": ["packages/*", "examples/*"],
 	"scripts": {
-		"build": "bun run --filter './packages/*' build",
+		"build": "bun run --filter '@sukko/sdk' build && bun run --filter './packages/*' build",
 		"test": "bun run --filter './packages/*' test",
 		"lint": "biome check .",
 		"format": "biome format --write .",
