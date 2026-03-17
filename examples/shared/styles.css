@@ -1,0 +1,336 @@
+* {
+	margin: 0;
+	padding: 0;
+	box-sizing: border-box;
+}
+
+body {
+	font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+	background: #0f1117;
+	color: #e1e4e8;
+	height: 100vh;
+	overflow: hidden;
+}
+
+#root,
+#app {
+	height: 100vh;
+	display: flex;
+	flex-direction: column;
+}
+
+/* Connection Bar */
+.connection-bar {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 8px 12px;
+	background: #161b22;
+	border-bottom: 1px solid #30363d;
+	flex-shrink: 0;
+}
+
+.connection-bar input,
+.connection-bar textarea {
+	background: #0d1117;
+	border: 1px solid #30363d;
+	color: #e1e4e8;
+	padding: 6px 8px;
+	border-radius: 4px;
+	font-size: 13px;
+	font-family: inherit;
+}
+
+.connection-bar input {
+	flex: 1;
+	min-width: 200px;
+}
+
+.connection-bar textarea {
+	flex: 2;
+	resize: none;
+	height: 32px;
+	font-family: monospace;
+	font-size: 12px;
+}
+
+.connection-bar button {
+	padding: 6px 12px;
+	border: none;
+	border-radius: 4px;
+	font-size: 13px;
+	cursor: pointer;
+	white-space: nowrap;
+}
+
+.btn-connect {
+	background: #238636;
+	color: #fff;
+}
+
+.btn-connect:hover {
+	background: #2ea043;
+}
+
+.btn-disconnect {
+	background: #da3633;
+	color: #fff;
+}
+
+.btn-disconnect:hover {
+	background: #f85149;
+}
+
+.btn-secondary {
+	background: #21262d;
+	color: #c9d1d9;
+	border: 1px solid #30363d !important;
+}
+
+.btn-secondary:hover {
+	background: #30363d;
+}
+
+button:disabled {
+	opacity: 0.5;
+	cursor: not-allowed;
+}
+
+/* Status Indicator */
+.status-indicator {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	font-size: 12px;
+	color: #8b949e;
+	margin-left: 8px;
+	white-space: nowrap;
+}
+
+.status-dot {
+	width: 8px;
+	height: 8px;
+	border-radius: 50%;
+	background: #484f58;
+}
+
+.status-dot.connected {
+	background: #3fb950;
+}
+
+.status-dot.connecting,
+.status-dot.reconnecting {
+	background: #d29922;
+	animation: pulse 1s infinite;
+}
+
+.status-dot.disconnected {
+	background: #484f58;
+}
+
+.status-dot.error {
+	background: #f85149;
+}
+
+@keyframes pulse {
+	0%,
+	100% {
+		opacity: 1;
+	}
+	50% {
+		opacity: 0.4;
+	}
+}
+
+/* Main Layout */
+.main-layout {
+	display: flex;
+	flex: 1;
+	overflow: hidden;
+}
+
+/* Channel Sidebar */
+.channel-sidebar {
+	width: 220px;
+	background: #161b22;
+	border-right: 1px solid #30363d;
+	display: flex;
+	flex-direction: column;
+	overflow-y: auto;
+	flex-shrink: 0;
+}
+
+.channel-section {
+	padding: 12px;
+}
+
+.channel-section-title {
+	font-size: 11px;
+	font-weight: 600;
+	text-transform: uppercase;
+	color: #8b949e;
+	margin-bottom: 8px;
+	letter-spacing: 0.5px;
+}
+
+.channel-item {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	padding: 6px 8px;
+	border-radius: 4px;
+	cursor: pointer;
+	font-size: 13px;
+	color: #c9d1d9;
+}
+
+.channel-item:hover {
+	background: #21262d;
+}
+
+.channel-item.active {
+	background: #1f6feb33;
+	color: #58a6ff;
+}
+
+.channel-item .channel-name {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.channel-item button {
+	font-size: 11px;
+	padding: 2px 6px;
+	border: 1px solid #30363d;
+	background: transparent;
+	color: #8b949e;
+	border-radius: 3px;
+	cursor: pointer;
+}
+
+.channel-item button:hover {
+	background: #21262d;
+	color: #c9d1d9;
+}
+
+/* Message Feed */
+.message-feed {
+	flex: 1;
+	display: flex;
+	flex-direction: column;
+	overflow: hidden;
+}
+
+.message-list {
+	flex: 1;
+	overflow-y: auto;
+	padding: 12px;
+}
+
+.message {
+	padding: 4px 0;
+	font-size: 13px;
+	line-height: 1.5;
+}
+
+.message .msg-time {
+	color: #484f58;
+	font-size: 11px;
+	margin-right: 6px;
+}
+
+.message .msg-channel {
+	color: #58a6ff;
+	font-size: 12px;
+	margin-right: 4px;
+}
+
+.message .msg-sender {
+	color: #d2a8ff;
+	font-weight: 600;
+	margin-right: 4px;
+}
+
+.message .msg-text {
+	color: #e1e4e8;
+}
+
+.message.system {
+	color: #8b949e;
+	font-style: italic;
+}
+
+.message.error {
+	color: #f85149;
+}
+
+/* Input Bar */
+.input-bar {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 8px 12px;
+	background: #161b22;
+	border-top: 1px solid #30363d;
+	flex-shrink: 0;
+}
+
+.input-bar .channel-label {
+	font-size: 12px;
+	color: #58a6ff;
+	white-space: nowrap;
+}
+
+.input-bar input {
+	flex: 1;
+	background: #0d1117;
+	border: 1px solid #30363d;
+	color: #e1e4e8;
+	padding: 6px 8px;
+	border-radius: 4px;
+	font-size: 13px;
+}
+
+.input-bar button {
+	padding: 6px 12px;
+	background: #238636;
+	color: #fff;
+	border: none;
+	border-radius: 4px;
+	font-size: 13px;
+	cursor: pointer;
+}
+
+.input-bar button:hover {
+	background: #2ea043;
+}
+
+.input-bar button:disabled {
+	opacity: 0.5;
+	cursor: not-allowed;
+}
+
+/* Action Bar */
+.action-bar {
+	display: flex;
+	gap: 8px;
+	padding: 4px 12px 8px;
+	background: #161b22;
+}
+
+/* Responsive */
+@media (max-width: 600px) {
+	.channel-sidebar {
+		width: 160px;
+	}
+
+	.connection-bar {
+		flex-wrap: wrap;
+	}
+
+	.connection-bar input,
+	.connection-bar textarea {
+		min-width: 100%;
+	}
+}

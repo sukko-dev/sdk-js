@@ -1,0 +1,43 @@
+{
+	"name": "@sukko/svelte",
+	"version": "0.1.0",
+	"description": "Svelte 5 stores and context for Sukko real-time WebSocket SDK",
+	"type": "module",
+	"main": "./dist/index.cjs",
+	"module": "./dist/index.js",
+	"types": "./dist/index.d.ts",
+	"exports": {
+		".": {
+			"import": {
+				"types": "./dist/index.d.ts",
+				"default": "./dist/index.js"
+			},
+			"require": {
+				"types": "./dist/index.d.cts",
+				"default": "./dist/index.cjs"
+			}
+		}
+	},
+	"files": ["dist"],
+	"sideEffects": false,
+	"license": "MIT",
+	"publishConfig": {
+		"access": "public"
+	},
+	"scripts": {
+		"build": "tsup",
+		"test": "vitest run",
+		"test:watch": "vitest"
+	},
+	"peerDependencies": {
+		"@sukko/sdk": "workspace:*",
+		"svelte": ">=5"
+	},
+	"devDependencies": {
+		"@sukko/sdk": "workspace:*",
+		"svelte": "^5",
+		"tsup": "^8",
+		"typescript": "^5.5",
+		"vitest": "^3"
+	}
+}

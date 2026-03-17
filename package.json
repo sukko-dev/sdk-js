@@ -1,0 +1,19 @@
+{
+	"private": true,
+	"license": "MIT",
+	"workspaces": ["packages/*", "examples/*"],
+	"scripts": {
+		"build": "bun run --filter './packages/*' build",
+		"test": "bun run --filter './packages/*' test",
+		"lint": "biome check .",
+		"format": "biome format --write .",
+		"token": "bun run scripts/generate-token.ts",
+		"ci:version": "changeset version && bun update",
+		"ci:publish": "bun run build && changeset publish"
+	},
+	"devDependencies": {
+		"@biomejs/biome": "^1.9",
+		"@changesets/cli": "^2.29",
+		"jose": "^6.0"
+	}
+}

@@ -1,0 +1,20 @@
+{
+	"name": "chat-svelte",
+	"private": true,
+	"type": "module",
+	"scripts": {
+		"dev": "vite",
+		"build": "vite build"
+	},
+	"dependencies": {
+		"@sukko/sdk": "workspace:*",
+		"@sukko/svelte": "workspace:*",
+		"@sukko/websocket": "workspace:*"
+	},
+	"devDependencies": {
+		"@sveltejs/vite-plugin-svelte": "^5.0",
+		"svelte": "^5.0",
+		"typescript": "^5.7",
+		"vite": "^6.0"
+	}
+}

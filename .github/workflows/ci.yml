@@ -1,0 +1,34 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - run: bun install --frozen-lockfile
+
+      - name: Lint & format check
+        run: bun run lint
+
+      - name: Build all packages
+        run: bun run build
+
+      - name: Run tests
+        run: bun run test
+
+      - name: Type validation (@sukko/sdk)
+        run: cd packages/sdk && bunx @arethetypeswrong/cli --pack
+
+      - name: Type validation (@sukko/react)
+        run: cd packages/react && bunx @arethetypeswrong/cli --pack

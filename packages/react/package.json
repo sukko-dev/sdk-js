@@ -1,0 +1,48 @@
+{
+	"name": "@sukko/react",
+	"version": "0.1.0",
+	"description": "React hooks and provider for Sukko real-time WebSocket SDK",
+	"type": "module",
+	"main": "./dist/index.cjs",
+	"module": "./dist/index.js",
+	"types": "./dist/index.d.ts",
+	"exports": {
+		".": {
+			"import": {
+				"types": "./dist/index.d.ts",
+				"default": "./dist/index.js"
+			},
+			"require": {
+				"types": "./dist/index.d.cts",
+				"default": "./dist/index.cjs"
+			}
+		}
+	},
+	"files": ["dist"],
+	"sideEffects": false,
+	"license": "MIT",
+	"publishConfig": {
+		"access": "public"
+	},
+	"scripts": {
+		"build": "tsup",
+		"test": "vitest run",
+		"test:watch": "vitest"
+	},
+	"peerDependencies": {
+		"@sukko/sdk": "workspace:*",
+		"react": ">=18"
+	},
+	"devDependencies": {
+		"@sukko/sdk": "workspace:*",
+		"@testing-library/react": "^16",
+		"@types/react": "^19",
+		"@types/react-dom": "^19",
+		"jsdom": "^26",
+		"react": "^19",
+		"react-dom": "^19",
+		"tsup": "^8",
+		"typescript": "^5.5",
+		"vitest": "^3"
+	}
+}
