@@ -35,7 +35,7 @@ type ResolvedOptions = Required<
  * protocol: subscribe, unsubscribe, publish, heartbeat, reconnection with
  * replay, and mid-connection auth refresh.
  *
- * The transport layer (WebSocket, SSE, etc.) is injected via the `transport`
+ * The transport layer (WebSocket, SSE, Web Push, etc.) is injected via the `transport`
  * option, keeping this client decoupled from any specific transport.
  *
  * ```ts

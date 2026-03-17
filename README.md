@@ -133,7 +133,7 @@ setSukkoClient(client);
 
 ## Features
 
-- **Transport-agnostic core** — `@sukko/sdk` has no transport dependency; use WebSocket, SSE, or your own adapter
+- **Transport-agnostic core** — `@sukko/sdk` has no transport dependency; use WebSocket, SSE, Web Push, or your own adapter
 - **WebSocket transport** — `@sukko/websocket` wraps the browser/Node WebSocket API
 - **React bindings** — hooks with `useSyncExternalStore` for tear-free renders
 - **Vue bindings** — composables with `provide`/`inject` and reactive refs

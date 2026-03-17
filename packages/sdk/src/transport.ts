@@ -1,5 +1,5 @@
 // ---------------------------------------------------------------------------
-// Transport abstraction — contract for WebSocket, SSE, Push transports
+// Transport abstraction — contract for WebSocket, SSE, Web Push transports
 // ---------------------------------------------------------------------------
 
 /**
@@ -12,7 +12,7 @@ export type TransportState = "closed" | "opening" | "open";
 
 /**
  * Declares what the transport supports.
- * WebSocket: all true. SSE: canSend via HTTP fallback. Push: receive-only.
+ * WebSocket: all true. SSE: canSend via HTTP fallback. Web Push: receive-only.
  */
 export interface TransportCapabilities {
 	canSend: boolean;
