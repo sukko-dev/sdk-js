@@ -31,7 +31,7 @@ client.on("message", (msg) => {
   console.log(msg.channel, msg.data);
 });
 
-client.subscribe(["tenant.BTC.trade"]);
+client.subscribe(["acme.general.chat"]);
 ```
 
 ### React
@@ -45,21 +45,21 @@ const transport = new WebSocketTransport({ url: "wss://your-server.com/ws" });
 function App() {
   return (
     <SukkoProvider options={{ transport, token }}>
-      <TradeView />
+      <ChatRoom />
     </SukkoProvider>
   );
 }
 
-function TradeView() {
+function ChatRoom() {
   const { state } = useConnectionState();
-  const { data } = useSubscription<Trade>({
-    channels: ["tenant.BTC.trade"],
+  const { data } = useSubscription<ChatMessage>({
+    channels: ["acme.general.chat"],
   });
 
   return (
     <div>
       <p>Status: {state}</p>
-      <p>Latest price: {data?.price}</p>
+      <p>Latest: {data?.text}</p>
     </div>
   );
 }
@@ -72,14 +72,14 @@ function TradeView() {
 import { useSubscription, useConnectionState } from "@sukko/vue";
 
 const { state } = useConnectionState();
-const { data } = useSubscription<Trade>({
-  channels: ["tenant.BTC.trade"],
+const { data } = useSubscription<ChatMessage>({
+  channels: ["acme.general.chat"],
 });
 </script>
 
 <template>
   <p>Status: {{ state }}</p>
-  <p>Latest price: {{ data?.price }}</p>
+  <p>Latest: {{ data?.text }}</p>
 </template>
 ```
 
@@ -105,13 +105,13 @@ createApp(App)
 import { createSubscription, createConnectionState } from "@sukko/svelte";
 
 const connection = createConnectionState();
-const subscription = createSubscription<Trade>({
-  channels: ["tenant.BTC.trade"],
+const subscription = createSubscription<ChatMessage>({
+  channels: ["acme.general.chat"],
 });
 </script>
 
 <p>Status: {$connection.state}</p>
-<p>Latest price: {$subscription.data?.price}</p>
+<p>Latest: {$subscription.data?.text}</p>
 ```
 
 Set the client context in your root component:
@@ -159,7 +159,7 @@ Each example includes: JWT auth, channel subscriptions, publishing, principal-ba
 Generate test JWT tokens for local development:
 
 ```bash
-bun run token --sub alice --tenant acme --groups traders,whales
+bun run token --sub alice --tenant acme --groups admins,moderators
 ```
 
 Options: `--sub` (principal), `--tenant` (tenant ID), `--groups` (comma-separated), `--secret` (default: `sukko-dev-secret`), `--exp` (default: `1h`).
