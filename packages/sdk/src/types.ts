@@ -74,7 +74,6 @@ export interface UnsubscriptionAckMessage {
 	type: "unsubscription_ack";
 	unsubscribed: string[];
 	count: number;
-	forced?: true;
 }
 
 export interface PublishAckMessage {
@@ -92,9 +91,7 @@ export type PublishErrorCode =
 	| "publish_failed"
 	| "forbidden"
 	| "topic_not_provisioned"
-	| "service_unavailable"
-	| "no_routing_rules"
-	| "no_matching_route";
+	| "service_unavailable";
 
 export interface PublishErrorMessage {
 	type: "publish_error";

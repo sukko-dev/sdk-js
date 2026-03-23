@@ -17,9 +17,10 @@ const client = getSukkoClient();
 let joinedGroups = $state<string[]>([]);
 
 const claims = $derived(decodeTokenPayload(token));
-const publicChannels = ["all.trade"];
-const userChannels = $derived(claims.sub ? [`notifications.${claims.sub}`] : []);
-const groupChannels = $derived(joinedGroups.map((g) => `community.${g}`));
+const tenant = $derived(claims.tenant_id ?? "sukko");
+const publicChannels = $derived([`${tenant}.general.messages`]);
+const userChannels = $derived(claims.sub ? [`${tenant}.inbox.${claims.sub}`] : []);
+const groupChannels = $derived(joinedGroups.map((g) => `${tenant}.rooms.${g}`));
 const allSubscribed = $derived([...publicChannels, ...userChannels, ...groupChannels]);
 
 // Manage subscriptions reactively via $effect
@@ -64,7 +65,7 @@ function joinGroup(group: string) {
 
 function leaveGroup(group: string) {
 	joinedGroups = joinedGroups.filter((g) => g !== group);
-	if (selectedChannel === `community.${group}`) {
+	if (selectedChannel === `${tenant}.rooms.${group}`) {
 		onSelectChannel(allSubscribed[0] ?? "");
 	}
 }
@@ -107,21 +108,21 @@ function leaveGroup(group: string) {
 		<div class="channel-section-title">Groups</div>
 		{#each claims.groups ?? [] as group}
 			{#if joinedGroups.includes(group)}
-				<div class="channel-item {selectedChannel === `community.${group}` ? 'active' : ''}">
+				<div class="channel-item {selectedChannel === `${tenant}.rooms.${group}` ? 'active' : ''}">
 					<span
 						class="channel-name"
-						onclick={() => onSelectChannel(`community.${group}`)}
+						onclick={() => onSelectChannel(`${tenant}.rooms.${group}`)}
 						role="button"
 						tabindex="0"
-						onkeydown={(e) => e.key === 'Enter' && onSelectChannel(`community.${group}`)}
+						onkeydown={(e) => e.key === 'Enter' && onSelectChannel(`${tenant}.rooms.${group}`)}
 					>
-						community.{group}
+						{tenant}.rooms.{group}
 					</span>
 					<button onclick={() => leaveGroup(group)}>Leave</button>
 				</div>
 			{:else}
 				<div class="channel-item">
-					<span class="channel-name" style="color: #8b949e">community.{group}</span>
+					<span class="channel-name" style="color: #8b949e">{tenant}.rooms.{group}</span>
 					<button onclick={() => joinGroup(group)}>Join</button>
 				</div>
 			{/if}

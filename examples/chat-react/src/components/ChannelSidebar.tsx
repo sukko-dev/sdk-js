@@ -55,18 +55,19 @@ export function ChannelSidebar(props: {
 }) {
 	const client = useSukkoClient();
 	const claims = useMemo(() => decodeTokenPayload(props.token), [props.token]);
+	const tenant = claims.tenant_id ?? "sukko";
 
-	const publicChannels = useMemo(() => ["all.trade"], []);
+	const publicChannels = useMemo(() => [`${tenant}.general.messages`], [tenant]);
 	const userChannels = useMemo(
-		() => (claims.sub ? [`notifications.${claims.sub}`] : []),
-		[claims.sub],
+		() => (claims.sub ? [`${tenant}.inbox.${claims.sub}`] : []),
+		[tenant, claims.sub],
 	);
 	const availableGroups = claims.groups ?? [];
 	const [joinedGroups, setJoinedGroups] = useState<string[]>([]);
 
 	const allSubscribed = useMemo(
-		() => [...publicChannels, ...userChannels, ...joinedGroups.map((g) => `community.${g}`)],
-		[publicChannels, userChannels, joinedGroups],
+		() => [...publicChannels, ...userChannels, ...joinedGroups.map((g) => `${tenant}.rooms.${g}`)],
+		[publicChannels, userChannels, joinedGroups, tenant],
 	);
 
 	// Auto-select first channel
@@ -83,7 +84,7 @@ export function ChannelSidebar(props: {
 	};
 
 	const handleLeaveGroup = (group: string) => {
-		const channel = `community.${group}`;
+		const channel = `${tenant}.rooms.${group}`;
 		client.unsubscribe([channel]);
 		setJoinedGroups((prev) => prev.filter((g) => g !== group));
 		if (props.selectedChannel === channel) {
@@ -124,7 +125,7 @@ export function ChannelSidebar(props: {
 			<div className="channel-section">
 				<div className="channel-section-title">Groups</div>
 				{availableGroups.map((group) => {
-					const channel = `community.${group}`;
+					const channel = `${tenant}.rooms.${group}`;
 					const joined = joinedGroups.includes(group);
 
 					if (joined) {
@@ -143,7 +144,7 @@ export function ChannelSidebar(props: {
 					return (
 						<div key={group} className="channel-item">
 							<span className="channel-name" style={{ color: "#8b949e" }}>
-								community.{group}
+								{`${tenant}.rooms.${group}`}
 							</span>
 							<button type="button" onClick={() => handleJoinGroup(group)}>
 								Join
