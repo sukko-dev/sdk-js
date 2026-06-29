@@ -1,11 +1,7 @@
 <script lang="ts">
 import type { SukkoClient } from "@sukko/sdk";
-import { setSukkoClient, createConnectionState } from "@sukko/svelte";
+import { createConnectionState, setSukkoClient } from "@sukko/svelte";
 import type { ChatMessage } from "../utils";
-import ConnectionPanel from "./ConnectionPanel.svelte";
-import ChannelSidebar from "./ChannelSidebar.svelte";
-import MessageFeed from "./MessageFeed.svelte";
-import MessageInput from "./MessageInput.svelte";
 
 interface Props {
 	client: SukkoClient;
@@ -21,10 +17,18 @@ interface Props {
 	onMessage: (msg: ChatMessage) => void;
 }
 
-let {
-	client, wsUrl, token, messages, selectedChannel,
-	onWsUrlChange, onTokenChange, onConnect, onDisconnect,
-	onSelectChannel, onMessage,
+const {
+	client,
+	wsUrl,
+	token,
+	messages,
+	selectedChannel,
+	onWsUrlChange,
+	onTokenChange,
+	onConnect,
+	onDisconnect,
+	onSelectChannel,
+	onMessage,
 }: Props = $props();
 
 // Set context during component initialization — this is the correct place
@@ -32,10 +36,10 @@ setSukkoClient(client);
 
 // Now we can safely use context-dependent stores
 const connectionStore = createConnectionState();
-let connectionState = $state("disconnected");
+let _connectionState = $state("disconnected");
 
-const unsubConnection = connectionStore.subscribe((v) => {
-	connectionState = v.state;
+const _unsubConnection = connectionStore.subscribe((v) => {
+	_connectionState = v.state;
 });
 </script>
 

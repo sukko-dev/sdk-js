@@ -1,5 +1,11 @@
 import { SukkoClient, TypedEventEmitter } from "@sukko/sdk";
-import type { DataMessage, Transport, TransportCapabilities, TransportEvents, TransportState } from "@sukko/sdk";
+import type {
+	DataMessage,
+	Transport,
+	TransportCapabilities,
+	TransportEvents,
+	TransportState,
+} from "@sukko/sdk";
 import { describe, expect, it, vi } from "vitest";
 
 class MockTransport extends TypedEventEmitter<TransportEvents> implements Transport {

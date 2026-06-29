@@ -30,5 +30,30 @@
 	},
 	"files": {
 		"ignore": ["node_modules", "dist", "coverage", "*.d.ts", "*.d.cts"]
-	}
+	},
+	"overrides": [
+		{
+			"include": ["**/*.svelte", "**/*.vue"],
+			"linter": {
+				"rules": {
+					"correctness": {
+						"noUnusedVariables": "off"
+					},
+					"style": {
+						"useConst": "off"
+					}
+				}
+			}
+		},
+		{
+			"include": ["**/*.test.ts", "**/*.test.tsx", "**/*.spec.ts", "**/*.spec.tsx"],
+			"linter": {
+				"rules": {
+					"suspicious": {
+						"noExplicitAny": "off"
+					}
+				}
+			}
+		}
+	]
 }

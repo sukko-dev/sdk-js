@@ -2,7 +2,12 @@
 // Connection state
 // ---------------------------------------------------------------------------
 
-export type ConnectionState = "disconnected" | "connecting" | "connected" | "reconnecting" | "error";
+export type ConnectionState =
+	| "disconnected"
+	| "connecting"
+	| "connected"
+	| "reconnecting"
+	| "error";
 
 // ---------------------------------------------------------------------------
 // Client → Server messages
@@ -25,7 +30,7 @@ export interface PublishMessage {
 
 export interface ReconnectMessage {
 	type: "reconnect";
-	data: { client_id: string; last_offset: Record<string, number> };
+	data: { client_id: string; last_pos: Record<string, string> };
 }
 
 export interface HeartbeatMessage {
@@ -56,6 +61,7 @@ export interface DataMessage<T = unknown> {
 	ts: number;
 	channel: string;
 	data: T;
+	pos?: string;
 }
 
 export interface SubscriptionAckMessage {

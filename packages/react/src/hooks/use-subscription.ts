@@ -57,6 +57,7 @@ export function useSubscription<T = unknown>(
 	const isSubscribed = useRef(false);
 
 	// Subscribe to external store (message updates)
+	// biome-ignore lint/correctness/useExhaustiveDependencies: channels is captured via channelKey which provides stable identity
 	const subscribe = useCallback(
 		(onStoreChange: () => void): (() => void) => {
 			const off = client.on("message", (msg: DataMessage) => {
@@ -84,6 +85,7 @@ export function useSubscription<T = unknown>(
 	const lastMessage = useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot);
 
 	// Manage WebSocket subscriptions with ref counting
+	// biome-ignore lint/correctness/useExhaustiveDependencies: channels is captured via channelKey which provides stable identity
 	useEffect(() => {
 		if (!enabled || channels.length === 0) return;
 

@@ -10,7 +10,16 @@ interface Props {
 	onDisconnect: () => void;
 }
 
-let { wsUrl, token, connected, connectionState, onWsUrlChange, onTokenChange, onConnect, onDisconnect }: Props = $props();
+const {
+	wsUrl,
+	token,
+	connected,
+	connectionState,
+	onWsUrlChange,
+	onTokenChange,
+	onConnect,
+	onDisconnect,
+}: Props = $props();
 </script>
 
 <div class="connection-bar">

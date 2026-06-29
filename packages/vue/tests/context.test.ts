@@ -1,8 +1,8 @@
 import { SukkoClient, TypedEventEmitter } from "@sukko/sdk";
 import type { Transport, TransportCapabilities, TransportEvents, TransportState } from "@sukko/sdk";
 import { mount } from "@vue/test-utils";
+import { describe, expect, it } from "vitest";
 import { defineComponent, h } from "vue";
-import { afterEach, describe, expect, it, vi } from "vitest";
 import { SukkoProvider, useSukkoClient } from "../src/context";
 
 class MockTransport extends TypedEventEmitter<TransportEvents> implements Transport {

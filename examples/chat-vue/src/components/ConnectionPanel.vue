@@ -1,13 +1,11 @@
 <script setup lang="ts">
-import StatusIndicator from "./StatusIndicator.vue";
-
-const props = defineProps<{
+const _props = defineProps<{
 	wsUrl: string;
 	token: string;
 	connected: boolean;
 }>();
 
-const emit = defineEmits<{
+const _emit = defineEmits<{
 	"update:wsUrl": [url: string];
 	"update:token": [token: string];
 	connect: [];

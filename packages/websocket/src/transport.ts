@@ -30,10 +30,7 @@ const DEFAULT_CONNECTION_TIMEOUT = 10000;
  * });
  * ```
  */
-export class WebSocketTransport
-	extends TypedEventEmitter<TransportEvents>
-	implements Transport
-{
+export class WebSocketTransport extends TypedEventEmitter<TransportEvents> implements Transport {
 	private ws: WebSocket | null = null;
 	private token: string;
 	private readonly url: string;
@@ -151,10 +148,7 @@ export class WebSocketTransport
 			this.ws.onclose = null;
 			this.ws.onerror = null;
 			this.ws.onmessage = null;
-			if (
-				this.ws.readyState === WebSocket.OPEN ||
-				this.ws.readyState === WebSocket.CONNECTING
-			) {
+			if (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING) {
 				this.ws.close(code ?? 1000, reason ?? "");
 			}
 			this.ws = null;

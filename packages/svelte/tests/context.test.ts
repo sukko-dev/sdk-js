@@ -21,7 +21,7 @@ class MockTransport extends TypedEventEmitter<TransportEvents> implements Transp
 }
 
 // Mock svelte context API
-let contextStore = new Map<unknown, unknown>();
+const contextStore = new Map<unknown, unknown>();
 
 vi.mock("svelte", () => ({
 	setContext: (key: unknown, value: unknown) => {

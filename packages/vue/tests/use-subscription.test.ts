@@ -1,10 +1,16 @@
 import { SukkoClient, TypedEventEmitter } from "@sukko/sdk";
-import type { DataMessage, Transport, TransportCapabilities, TransportEvents, TransportState } from "@sukko/sdk";
+import type {
+	DataMessage,
+	Transport,
+	TransportCapabilities,
+	TransportEvents,
+	TransportState,
+} from "@sukko/sdk";
 import { mount } from "@vue/test-utils";
-import { defineComponent, h, nextTick } from "vue";
 import { describe, expect, it, vi } from "vitest";
-import { SukkoProvider } from "../src/context";
+import { defineComponent, h, nextTick } from "vue";
 import { useSubscription } from "../src/composables/use-subscription";
+import { SukkoProvider } from "../src/context";
 
 class MockTransport extends TypedEventEmitter<TransportEvents> implements Transport {
 	private _state: TransportState = "closed";

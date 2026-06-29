@@ -39,7 +39,12 @@ export function ConnectionPanel(props: {
 					Disconnect
 				</button>
 			) : (
-				<button type="button" className="btn-connect" onClick={props.onConnect} disabled={!props.token}>
+				<button
+					type="button"
+					className="btn-connect"
+					onClick={props.onConnect}
+					disabled={!props.token}
+				>
 					Connect
 				</button>
 			)}

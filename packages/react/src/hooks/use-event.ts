@@ -23,7 +23,7 @@ export function useSukkoEvent<K extends keyof SukkoClientEvents>(
 	useEffect(() => {
 		// biome-ignore lint/suspicious/noExplicitAny: wrapper must forward any args
 		const wrapper = (...args: any[]) => {
-			(handlerRef.current as Function)(...args);
+			(handlerRef.current as (...args: unknown[]) => void)(...args);
 		};
 
 		const off = client.on(event, wrapper as SukkoClientEvents[K]);

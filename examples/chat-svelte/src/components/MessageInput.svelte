@@ -9,14 +9,14 @@ interface Props {
 	onMessage: (msg: ChatMessage) => void;
 }
 
-let { token, selectedChannel, onMessage }: Props = $props();
+const { token, selectedChannel, onMessage }: Props = $props();
 
 const client = getSukkoClient();
 const connectionStore = createConnectionState();
 let isConnected = $state(false);
 let text = $state("");
 
-const unsubConnection = connectionStore.subscribe((v) => {
+const _unsubConnection = connectionStore.subscribe((v) => {
 	isConnected = v.isConnected;
 });
 

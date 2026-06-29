@@ -10,11 +10,12 @@ export function MessageFeed(props: {
 	const listRef = useRef<HTMLDivElement>(null);
 
 	// Auto-scroll to bottom on new messages
+	// biome-ignore lint/correctness/useExhaustiveDependencies: props.messages intentionally triggers scroll; listRef is a stable ref
 	useEffect(() => {
 		if (listRef.current) {
 			listRef.current.scrollTop = listRef.current.scrollHeight;
 		}
-	}, [props.messages.length]);
+	}, [props.messages]);
 
 	// Capture error events as system messages
 	useSukkoEvent("error", (err) => {

@@ -11,7 +11,7 @@ interface Props {
 	onMessage: (msg: ChatMessage) => void;
 }
 
-let { token, selectedChannel, onSelectChannel, onMessage }: Props = $props();
+const { token, selectedChannel, onSelectChannel, onMessage }: Props = $props();
 
 const client = getSukkoClient();
 let joinedGroups = $state<string[]>([]);

@@ -2,11 +2,9 @@
 import { SukkoClient } from "@sukko/sdk";
 import { WebSocketTransport } from "@sukko/websocket";
 import type { ChatMessage } from "./utils";
-import ConnectionPanel from "./components/ConnectionPanel.svelte";
-import ChatLayout from "./components/ChatLayout.svelte";
 
-let wsUrl = $state("ws://localhost:3000/ws");
-let token = $state("");
+const wsUrl = $state("ws://localhost:3000/ws");
+const token = $state("");
 let client = $state<SukkoClient | null>(null);
 let messages = $state<ChatMessage[]>([]);
 let selectedChannel = $state<string | null>(null);
