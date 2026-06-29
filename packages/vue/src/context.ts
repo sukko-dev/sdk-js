@@ -5,7 +5,6 @@ import {
 	type Plugin,
 	type Ref,
 	defineComponent,
-	h,
 	inject,
 	onMounted,
 	onUnmounted,
@@ -95,8 +94,7 @@ export function createSukkoPlugin(pluginOptions: SukkoPluginOptions): Plugin {
 				throw new Error("createSukkoPlugin requires either a 'client' or 'options'");
 			}
 			const client =
-				pluginOptions.client ??
-				new SukkoClient({ ...pluginOptions.options!, autoConnect: false });
+				pluginOptions.client ?? new SukkoClient({ ...pluginOptions.options!, autoConnect: false });
 			app.provide(SUKKO_KEY, client);
 		},
 	};

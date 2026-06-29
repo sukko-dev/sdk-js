@@ -1,10 +1,10 @@
-import { SukkoClient } from "@sukko/sdk";
 import { SukkoProvider } from "@sukko/react";
+import { SukkoClient } from "@sukko/sdk";
 import { WebSocketTransport } from "@sukko/websocket";
 import { useCallback, useRef, useState } from "react";
 import type { ChatMessage } from "../utils";
-import { ConnectionPanel } from "./ConnectionPanel";
 import { ChannelSidebar } from "./ChannelSidebar";
+import { ConnectionPanel } from "./ConnectionPanel";
 import { MessageFeed } from "./MessageFeed";
 import { MessageInput } from "./MessageInput";
 
@@ -74,11 +74,7 @@ export function App() {
 					/>
 					<div className="message-feed">
 						<MessageFeed messages={messages} onMessage={addMessage} />
-						<MessageInput
-							token={token}
-							selectedChannel={selectedChannel}
-							onMessage={addMessage}
-						/>
+						<MessageInput token={token} selectedChannel={selectedChannel} onMessage={addMessage} />
 					</div>
 				</div>
 			</SukkoProvider>
@@ -89,7 +85,15 @@ export function App() {
 		<>
 			{connectionPanel}
 			<div className="main-layout">
-				<div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: "#8b949e" }}>
+				<div
+					style={{
+						flex: 1,
+						display: "flex",
+						alignItems: "center",
+						justifyContent: "center",
+						color: "#8b949e",
+					}}
+				>
 					Enter a WebSocket URL and token, then click Connect.
 				</div>
 			</div>

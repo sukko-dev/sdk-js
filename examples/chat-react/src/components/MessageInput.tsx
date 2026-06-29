@@ -36,7 +36,7 @@ export function MessageInput(props: {
 		});
 
 		setText("");
-	}, [canSend, text, props.selectedChannel, client, props.onMessage]);
+	}, [canSend, text, props.selectedChannel, props.token, client, props.onMessage]);
 
 	const handleRefreshToken = useCallback(async () => {
 		const newToken = prompt("Enter new JWT token:");
@@ -68,9 +68,7 @@ export function MessageInput(props: {
 	return (
 		<>
 			<div className="input-bar">
-				{props.selectedChannel && (
-					<span className="channel-label">{props.selectedChannel}</span>
-				)}
+				{props.selectedChannel && <span className="channel-label">{props.selectedChannel}</span>}
 				<input
 					type="text"
 					value={text}
@@ -84,10 +82,20 @@ export function MessageInput(props: {
 				</button>
 			</div>
 			<div className="action-bar">
-				<button type="button" className="btn-secondary" onClick={handleRefreshToken} disabled={!isConnected}>
+				<button
+					type="button"
+					className="btn-secondary"
+					onClick={handleRefreshToken}
+					disabled={!isConnected}
+				>
 					Refresh Token
 				</button>
-				<button type="button" className="btn-secondary" onClick={handleReplay} disabled={!isConnected}>
+				<button
+					type="button"
+					className="btn-secondary"
+					onClick={handleReplay}
+					disabled={!isConnected}
+				>
 					Reconnect with Replay
 				</button>
 			</div>

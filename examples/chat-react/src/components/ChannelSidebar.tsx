@@ -33,7 +33,13 @@ function SubscribedChannel(props: {
 		>
 			<span className="channel-name">{props.channel}</span>
 			{props.action && (
-				<button type="button" onClick={(e) => { e.stopPropagation(); props.action!.onClick(); }}>
+				<button
+					type="button"
+					onClick={(e) => {
+						e.stopPropagation();
+						props.action!.onClick();
+					}}
+				>
 					{props.action.label}
 				</button>
 			)}
@@ -50,19 +56,25 @@ export function ChannelSidebar(props: {
 	const client = useSukkoClient();
 	const claims = useMemo(() => decodeTokenPayload(props.token), [props.token]);
 
-	const publicChannels = ["all.trade"];
-	const userChannels = claims.sub ? [`notifications.${claims.sub}`] : [];
+	const publicChannels = useMemo(() => ["all.trade"], []);
+	const userChannels = useMemo(
+		() => (claims.sub ? [`notifications.${claims.sub}`] : []),
+		[claims.sub],
+	);
 	const availableGroups = claims.groups ?? [];
 	const [joinedGroups, setJoinedGroups] = useState<string[]>([]);
 
-	const allSubscribed = [...publicChannels, ...userChannels, ...joinedGroups.map((g) => `community.${g}`)];
+	const allSubscribed = useMemo(
+		() => [...publicChannels, ...userChannels, ...joinedGroups.map((g) => `community.${g}`)],
+		[publicChannels, userChannels, joinedGroups],
+	);
 
 	// Auto-select first channel
 	useEffect(() => {
 		if (!props.selectedChannel && allSubscribed.length > 0) {
 			props.onSelectChannel(allSubscribed[0]);
 		}
-	}, [allSubscribed.length]);
+	}, [props.selectedChannel, props.onSelectChannel, allSubscribed]);
 
 	const handleJoinGroup = (group: string) => {
 		if (!joinedGroups.includes(group)) {

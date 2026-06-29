@@ -1,19 +1,14 @@
 <script setup lang="ts">
 import { SukkoClient } from "@sukko/sdk";
-import { SukkoProvider } from "@sukko/vue";
 import { WebSocketTransport } from "@sukko/websocket";
 import { ref, shallowRef } from "vue";
 import type { ChatMessage } from "./utils";
-import ConnectionPanel from "./components/ConnectionPanel.vue";
-import ChannelSidebar from "./components/ChannelSidebar.vue";
-import MessageFeed from "./components/MessageFeed.vue";
-import MessageInput from "./components/MessageInput.vue";
 
 const wsUrl = ref("ws://localhost:3000/ws");
 const token = ref("");
 const client = shallowRef<SukkoClient | null>(null);
 const messages = ref<ChatMessage[]>([]);
-const selectedChannel = ref<string | null>(null);
+const _selectedChannel = ref<string | null>(null);
 
 function addMessage(msg: ChatMessage) {
 	messages.value = [...messages.value, msg].slice(-200);

@@ -17,7 +17,9 @@ const client = useSukkoClient();
 const { isConnected } = useConnectionState();
 const text = ref("");
 
-const canSend = computed(() => isConnected.value && !!props.selectedChannel && text.value.trim().length > 0);
+const canSend = computed(
+	() => isConnected.value && !!props.selectedChannel && text.value.trim().length > 0,
+);
 
 function handleSend() {
 	if (!canSend.value || !props.selectedChannel) return;

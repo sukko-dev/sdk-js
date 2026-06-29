@@ -2,7 +2,7 @@
 import { useSukkoEvent } from "@sukko/vue";
 import { nextTick, ref, watch } from "vue";
 import type { ChatMessage } from "../utils";
-import { createMessageId, formatTimestamp } from "../utils";
+import { createMessageId } from "../utils";
 
 const props = defineProps<{
 	messages: ChatMessage[];
@@ -15,12 +15,15 @@ const emit = defineEmits<{
 const listRef = ref<HTMLDivElement>();
 
 // Auto-scroll on new messages
-watch(() => props.messages.length, async () => {
-	await nextTick();
-	if (listRef.value) {
-		listRef.value.scrollTop = listRef.value.scrollHeight;
-	}
-});
+watch(
+	() => props.messages.length,
+	async () => {
+		await nextTick();
+		if (listRef.value) {
+			listRef.value.scrollTop = listRef.value.scrollHeight;
+		}
+	},
+);
 
 useSukkoEvent("error", (err) => {
 	emit("message", {

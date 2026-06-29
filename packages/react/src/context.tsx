@@ -1,8 +1,10 @@
 import { SukkoClient } from "@sukko/sdk";
 import type { SukkoClientOptions } from "@sukko/sdk";
-import { createContext, useEffect, useRef, type ReactNode } from "react";
+import { type ReactNode, createContext, useEffect, useRef } from "react";
 
-export const SukkoContext: React.Context<SukkoClient | null> = createContext<SukkoClient | null>(null);
+export const SukkoContext: React.Context<SukkoClient | null> = createContext<SukkoClient | null>(
+	null,
+);
 
 export interface SukkoProviderProps {
 	/** Pre-built client instance (takes precedence over options). */

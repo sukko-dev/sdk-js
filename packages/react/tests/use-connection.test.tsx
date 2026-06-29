@@ -71,7 +71,9 @@ describe("useConnectionState", () => {
 		);
 
 		act(() => {
+			// biome-ignore lint/suspicious/noExplicitAny: test-only access to internal client state
 			(client as any)._state = "connected";
+			// biome-ignore lint/suspicious/noExplicitAny: test-only access to internal client state
 			(client as any).emit("stateChange", "connected");
 		});
 
@@ -90,7 +92,9 @@ describe("useConnectionState", () => {
 		);
 
 		act(() => {
+			// biome-ignore lint/suspicious/noExplicitAny: test-only access to internal client state
 			(client as any)._state = "reconnecting";
+			// biome-ignore lint/suspicious/noExplicitAny: test-only access to internal client state
 			(client as any).emit("stateChange", "reconnecting");
 		});
 

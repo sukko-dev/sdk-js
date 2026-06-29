@@ -1,5 +1,8 @@
 /** WebSocket constructor type for dependency injection. */
-export type WebSocketConstructor = new (url: string | URL, protocols?: string | string[]) => WebSocket;
+export type WebSocketConstructor = new (
+	url: string | URL,
+	protocols?: string | string[],
+) => WebSocket;
 
 /** Options for creating a WebSocketTransport. */
 export interface WebSocketTransportOptions {

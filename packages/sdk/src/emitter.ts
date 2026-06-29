@@ -9,7 +9,7 @@
 export type EventMap = { [K: string]: (...args: any[]) => void };
 
 export class TypedEventEmitter<T extends EventMap = EventMap> {
-	private listeners = new Map<keyof T, Set<Function>>();
+	private listeners = new Map<keyof T, Set<(...args: unknown[]) => void>>();
 
 	/**
 	 * Register an event listener. Returns an unsubscribe function.

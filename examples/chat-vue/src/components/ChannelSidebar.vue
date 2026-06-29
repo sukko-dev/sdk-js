@@ -21,7 +21,7 @@ const publicChannels = ["all.trade"];
 const userChannels = computed(() =>
 	claims.value.sub ? [`notifications.${claims.value.sub}`] : [],
 );
-const availableGroups = computed(() => claims.value.groups ?? []);
+const _availableGroups = computed(() => claims.value.groups ?? []);
 const joinedGroups = ref<string[]>([]);
 const groupChannels = computed(() => joinedGroups.value.map((g) => `community.${g}`));
 
@@ -48,11 +48,15 @@ const { lastMessage } = useSubscription<Record<string, unknown>>({
 });
 
 // Auto-select first channel
-watch(allSubscribed, (channels) => {
-	if (!props.selectedChannel && channels.length > 0) {
-		emit("selectChannel", channels[0]);
-	}
-}, { immediate: true });
+watch(
+	allSubscribed,
+	(channels) => {
+		if (!props.selectedChannel && channels.length > 0) {
+			emit("selectChannel", channels[0]);
+		}
+	},
+	{ immediate: true },
+);
 
 function joinGroup(group: string) {
 	if (!joinedGroups.value.includes(group)) {

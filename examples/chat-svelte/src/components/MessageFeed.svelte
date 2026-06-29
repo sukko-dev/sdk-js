@@ -2,14 +2,14 @@
 import { onSukkoEvent } from "@sukko/svelte";
 import { tick } from "svelte";
 import type { ChatMessage } from "../utils";
-import { createMessageId, formatTimestamp } from "../utils";
+import { createMessageId } from "../utils";
 
 interface Props {
 	messages: ChatMessage[];
 	onMessage: (msg: ChatMessage) => void;
 }
 
-let { messages, onMessage }: Props = $props();
+const { messages, onMessage }: Props = $props();
 
 let listEl: HTMLDivElement;
 

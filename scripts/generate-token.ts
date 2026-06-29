@@ -1,5 +1,5 @@
-import { SignJWT } from "jose";
 import { parseArgs } from "node:util";
+import { SignJWT } from "jose";
 
 const { values } = parseArgs({
 	options: {
@@ -12,7 +12,9 @@ const { values } = parseArgs({
 });
 
 if (!values.sub || !values.tenant) {
-	console.error("Usage: bun run token --sub <principal> --tenant <tenant_id> [--groups g1,g2] [--secret key] [--exp 1h]");
+	console.error(
+		"Usage: bun run token --sub <principal> --tenant <tenant_id> [--groups g1,g2] [--secret key] [--exp 1h]",
+	);
 	process.exit(1);
 }
 
