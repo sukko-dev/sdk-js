@@ -2,7 +2,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SukkoClient } from "../src/client";
 import { CLOSE_CODES } from "../src/constants";
 import { TypedEventEmitter } from "../src/emitter";
-import type { Transport, TransportCapabilities, TransportEvents, TransportState } from "../src/transport";
+import type {
+	Transport,
+	TransportCapabilities,
+	TransportEvents,
+	TransportState,
+} from "../src/transport";
 
 // ---------------------------------------------------------------------------
 // Mock Transport
@@ -69,9 +74,10 @@ class MockTransport extends TypedEventEmitter<TransportEvents> implements Transp
 // Helpers
 // ---------------------------------------------------------------------------
 
-function createClient(
-	overrides: Partial<ConstructorParameters<typeof SukkoClient>[0]> = {},
-): { client: SukkoClient; transport: MockTransport } {
+function createClient(overrides: Partial<ConstructorParameters<typeof SukkoClient>[0]> = {}): {
+	client: SukkoClient;
+	transport: MockTransport;
+} {
 	const transport = (overrides.transport as MockTransport) ?? new MockTransport();
 	const client = new SukkoClient({
 		transport,
@@ -412,10 +418,7 @@ describe("SukkoClient", () => {
 			await vi.advanceTimersByTimeAsync(500); // would have timed out
 
 			// close should not have been called with heartbeat timeout
-			expect(closeSpy).not.toHaveBeenCalledWith(
-				CLOSE_CODES.HEARTBEAT_TIMEOUT,
-				"Heartbeat timeout",
-			);
+			expect(closeSpy).not.toHaveBeenCalledWith(CLOSE_CODES.HEARTBEAT_TIMEOUT, "Heartbeat timeout");
 
 			client.disconnect();
 		});
@@ -654,18 +657,19 @@ describe("SukkoClient", () => {
 	});
 
 	describe("replay", () => {
-		it("sends reconnect message with stored offsets", async () => {
+		it("sends reconnect message with last_pos when pos values are tracked", async () => {
 			const { client, transport } = createClient();
 			client.connect();
 			await vi.advanceTimersByTimeAsync(0);
 
-			// Simulate a message to populate offsets
+			// Simulate a message with pos to populate lastPos
 			transport.simulateMessage({
 				type: "message",
 				seq: 42,
 				ts: Date.now(),
 				channel: "tenant.BTC.trade",
 				data: { price: 50000 },
+				pos: "3-42",
 			});
 
 			client.reconnectWithReplay();
@@ -673,7 +677,7 @@ describe("SukkoClient", () => {
 			const reconnectMsg = transport.sent.find((s) => JSON.parse(s).type === "reconnect");
 			expect(reconnectMsg).toBeDefined();
 			const parsed = JSON.parse(reconnectMsg!);
-			expect(parsed.data.last_offset["tenant.BTC.trade"]).toBe(42);
+			expect(parsed.data.last_pos["tenant.BTC.trade"]).toBe("3-42");
 
 			client.disconnect();
 		});
@@ -682,6 +686,62 @@ describe("SukkoClient", () => {
 			const { client, transport } = createClient();
 			client.reconnectWithReplay();
 			expect(transport.sent.length).toBe(0);
+		});
+
+		it("does not send reconnect when no pos values have been tracked", async () => {
+			const { client, transport } = createClient();
+			client.connect();
+			await vi.advanceTimersByTimeAsync(0);
+
+			// Simulate a message WITHOUT pos (e.g. Direct backend)
+			transport.simulateMessage({
+				type: "message",
+				seq: 1,
+				ts: Date.now(),
+				channel: "tenant.BTC.trade",
+				data: { price: 50000 },
+			});
+
+			client.reconnectWithReplay();
+
+			const reconnectMsg = transport.sent.find((s) => JSON.parse(s).type === "reconnect");
+			expect(reconnectMsg).toBeUndefined();
+
+			client.disconnect();
+		});
+
+		it("only includes channels with pos in last_pos map", async () => {
+			const { client, transport } = createClient();
+			client.connect();
+			await vi.advanceTimersByTimeAsync(0);
+
+			// Channel with pos (Kafka backend)
+			transport.simulateMessage({
+				type: "message",
+				seq: 1,
+				ts: Date.now(),
+				channel: "tenant.BTC.trade",
+				data: {},
+				pos: "1-100",
+			});
+			// Channel without pos (Direct backend)
+			transport.simulateMessage({
+				type: "message",
+				seq: 2,
+				ts: Date.now(),
+				channel: "tenant.ETH.trade",
+				data: {},
+			});
+
+			client.reconnectWithReplay();
+
+			const reconnectMsg = transport.sent.find((s) => JSON.parse(s).type === "reconnect");
+			expect(reconnectMsg).toBeDefined();
+			const parsed = JSON.parse(reconnectMsg!);
+			expect(parsed.data.last_pos["tenant.BTC.trade"]).toBe("1-100");
+			expect(parsed.data.last_pos["tenant.ETH.trade"]).toBeUndefined();
+
+			client.disconnect();
 		});
 	});
 });

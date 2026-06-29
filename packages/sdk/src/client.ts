@@ -21,9 +21,7 @@ import type {
 	UnsubscriptionAckMessage,
 } from "./types";
 
-type ResolvedOptions = Required<
-	Omit<SukkoClientOptions, "transport" | "token" | "getToken">
-> & {
+type ResolvedOptions = Required<Omit<SukkoClientOptions, "transport" | "token" | "getToken">> & {
 	token: string;
 	getToken: SukkoClientOptions["getToken"];
 };
@@ -70,7 +68,7 @@ export class SukkoClient extends TypedEventEmitter<SukkoClientEvents> {
 
 	// Replay state
 	private clientId: string;
-	private lastOffsets = new Map<string, number>();
+	private lastPos = new Map<string, string>();
 	private lastActivityTimestamp: number = Date.now();
 
 	// Timers
@@ -236,18 +234,19 @@ export class SukkoClient extends TypedEventEmitter<SukkoClientEvents> {
 	// Public API — Replay
 	// ---------------------------------------------------------------------------
 
-	/** Send a reconnect-with-replay request using stored offsets. */
+	/** Send a reconnect-with-replay request using last-known pos values per channel. */
 	reconnectWithReplay(): void {
 		if (this.transport.state !== "open") return;
+		if (this.lastPos.size === 0) return;
 
-		const lastOffset: Record<string, number> = {};
-		this.lastOffsets.forEach((offset, topic) => {
-			lastOffset[topic] = offset;
+		const lastPos: Record<string, string> = {};
+		this.lastPos.forEach((pos, channel) => {
+			lastPos[channel] = pos;
 		});
 
 		this.send({
 			type: "reconnect",
-			data: { client_id: this.clientId, last_offset: lastOffset },
+			data: { client_id: this.clientId, last_pos: lastPos },
 		});
 	}
 
@@ -360,7 +359,9 @@ export class SukkoClient extends TypedEventEmitter<SukkoClientEvents> {
 			switch (raw.type) {
 				case "message": {
 					const msg = raw as unknown as DataMessage;
-					this.lastOffsets.set(msg.channel, msg.seq);
+					if (msg.pos) {
+						this.lastPos.set(msg.channel, msg.pos);
+					}
 					this.emit("message", msg);
 					break;
 				}
