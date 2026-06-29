@@ -16,17 +16,18 @@ const emit = defineEmits<{
 
 const client = useSukkoClient();
 const claims = computed(() => decodeTokenPayload(props.token));
+const tenant = computed(() => claims.value.tenant_id ?? "sukko");
 
-const publicChannels = ["all.trade"];
+const publicChannels = computed(() => [`${tenant.value}.general.messages`]);
 const userChannels = computed(() =>
-	claims.value.sub ? [`notifications.${claims.value.sub}`] : [],
+	claims.value.sub ? [`${tenant.value}.inbox.${claims.value.sub}`] : [],
 );
 const _availableGroups = computed(() => claims.value.groups ?? []);
 const joinedGroups = ref<string[]>([]);
-const groupChannels = computed(() => joinedGroups.value.map((g) => `community.${g}`));
+const groupChannels = computed(() => joinedGroups.value.map((g) => `${tenant.value}.rooms.${g}`));
 
 const allSubscribed = computed(() => [
-	...publicChannels,
+	...publicChannels.value,
 	...userChannels.value,
 	...groupChannels.value,
 ]);
@@ -65,7 +66,7 @@ function joinGroup(group: string) {
 }
 
 function leaveGroup(group: string) {
-	const channel = `community.${group}`;
+	const channel = `${tenant.value}.rooms.${group}`;
 	client.unsubscribe([channel]);
 	joinedGroups.value = joinedGroups.value.filter((g) => g !== group);
 	if (props.selectedChannel === channel) {
@@ -104,15 +105,15 @@ function leaveGroup(group: string) {
 			<div class="channel-section-title">Groups</div>
 			<div v-for="group in availableGroups" :key="group">
 				<div v-if="joinedGroups.includes(group)"
-					:class="['channel-item', { active: selectedChannel === `community.${group}` }]"
+					:class="['channel-item', { active: selectedChannel === `${tenant}.rooms.${group}` }]"
 				>
-					<span class="channel-name" @click="emit('selectChannel', `community.${group}`)">
-						community.{{ group }}
+					<span class="channel-name" @click="emit('selectChannel', `${tenant}.rooms.${group}`)">
+						{{ tenant }}.rooms.{{ group }}
 					</span>
 					<button @click="leaveGroup(group)">Leave</button>
 				</div>
 				<div v-else class="channel-item">
-					<span class="channel-name" style="color: #8b949e">community.{{ group }}</span>
+					<span class="channel-name" style="color: #8b949e">{{ tenant }}.rooms.{{ group }}</span>
 					<button @click="joinGroup(group)">Join</button>
 				</div>
 			</div>
