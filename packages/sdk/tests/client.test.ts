@@ -743,5 +743,43 @@ describe("SukkoClient", () => {
 
 			client.disconnect();
 		});
+
+		it("does not include unsubscribed channels in last_pos", async () => {
+			const { client, transport } = createClient();
+			client.connect();
+			await vi.advanceTimersByTimeAsync(0);
+
+			// Receive pos on two channels
+			transport.simulateMessage({
+				type: "message",
+				seq: 1,
+				ts: Date.now(),
+				channel: "tenant.BTC.trade",
+				data: {},
+				pos: "2-50",
+			});
+			transport.simulateMessage({
+				type: "message",
+				seq: 2,
+				ts: Date.now(),
+				channel: "tenant.ETH.trade",
+				data: {},
+				pos: "3-99",
+			});
+
+			// Unsubscribe from BTC
+			client.unsubscribe(["tenant.BTC.trade"]);
+			client.reconnectWithReplay();
+
+			const reconnectMsg = transport.sent.find((s) => JSON.parse(s).type === "reconnect");
+			expect(reconnectMsg).toBeDefined();
+			const parsed = JSON.parse(reconnectMsg!);
+			// Unsubscribed channel must not appear
+			expect(parsed.data.last_pos["tenant.BTC.trade"]).toBeUndefined();
+			// Still-subscribed channel must be present
+			expect(parsed.data.last_pos["tenant.ETH.trade"]).toBe("3-99");
+
+			client.disconnect();
+		});
 	});
 });

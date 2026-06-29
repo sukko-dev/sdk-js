@@ -185,7 +185,10 @@ export class SukkoClient extends TypedEventEmitter<SukkoClientEvents> {
 
 	/** Unsubscribe from one or more channels. */
 	unsubscribe(channels: string[]): void {
-		for (const ch of channels) this._subscriptions.delete(ch);
+		for (const ch of channels) {
+			this._subscriptions.delete(ch);
+			this.lastPos.delete(ch);
+		}
 
 		if (this.transport.state === "open") {
 			this.send({ type: "unsubscribe", data: { channels } });
