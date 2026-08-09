@@ -1,60 +1,69 @@
 import { describe, expect, it } from "vitest";
-import { buildChannel, getChannelCategory, parseChannel } from "../src/utils";
-
-describe("buildChannel", () => {
-	it("builds a 3-part channel string", () => {
-		expect(buildChannel("tenant", "BTC", "trade")).toBe("tenant.BTC.trade");
-	});
-
-	it("handles empty parts", () => {
-		expect(buildChannel("", "", "")).toBe("..");
-	});
-});
+import { buildChannel, parseChannel } from "../src/utils";
 
 describe("parseChannel", () => {
-	it("parses a 3-part channel", () => {
-		expect(parseChannel("tenant.BTC.trade")).toEqual({
-			tenant: "tenant",
-			identifier: "BTC",
-			category: "trade",
+	it("parses a 2-part channel", () => {
+		expect(parseChannel("acme.trades")).toEqual({
+			tenant: "acme",
+			suffix: "trades",
 		});
 	});
 
-	it("parses a 4+ part channel (category includes dots)", () => {
-		expect(parseChannel("tenant.BTC.trade.live")).toEqual({
-			tenant: "tenant",
-			identifier: "BTC",
-			category: "trade.live",
+	it("keeps a dotted suffix verbatim (opaque)", () => {
+		expect(parseChannel("acme.rooms.eng.general")).toEqual({
+			tenant: "acme",
+			suffix: "rooms.eng.general",
 		});
 	});
 
-	it("returns null for 2-part channel", () => {
-		expect(parseChannel("tenant.BTC")).toBeNull();
+	it("accepts an interior empty segment (suffix is opaque)", () => {
+		expect(parseChannel("acme..trades")).toEqual({
+			tenant: "acme",
+			suffix: ".trades",
+		});
 	});
 
-	it("returns null for 1-part channel", () => {
-		expect(parseChannel("tenant")).toBeNull();
+	it("returns null for a 1-part channel (no dot)", () => {
+		expect(parseChannel("acme")).toBeNull();
 	});
 
-	it("returns null for empty string", () => {
+	it("returns null for an empty tenant (leading dot)", () => {
+		expect(parseChannel(".trades")).toBeNull();
+	});
+
+	it("returns null for an empty whole suffix (trailing dot)", () => {
+		expect(parseChannel("acme.")).toBeNull();
+	});
+
+	it("returns null for the empty string", () => {
 		expect(parseChannel("")).toBeNull();
 	});
 });
 
-describe("getChannelCategory", () => {
-	it("extracts category from 3-part channel", () => {
-		expect(getChannelCategory("tenant.BTC.trade")).toBe("trade");
+describe("buildChannel", () => {
+	it("builds {tenant}.{suffix}, preserving a dotted suffix verbatim", () => {
+		expect(buildChannel("acme", "rooms.eng.messages")).toBe("acme.rooms.eng.messages");
 	});
 
-	it("extracts category from 4+ part channel", () => {
-		expect(getChannelCategory("tenant.BTC.trade.live")).toBe("trade.live");
+	it("throws a TypeError on an empty tenant", () => {
+		expect(() => buildChannel("", "trades")).toThrow(TypeError);
+		expect(() => buildChannel("", "trades")).toThrow(/non-empty/);
 	});
 
-	it("returns empty for 2-part channel", () => {
-		expect(getChannelCategory("tenant.BTC")).toBe("");
+	it("throws a TypeError on a tenant containing a dot", () => {
+		expect(() => buildChannel("a.b", "trades")).toThrow(TypeError);
 	});
 
-	it("returns empty for empty string", () => {
-		expect(getChannelCategory("")).toBe("");
+	it("throws a TypeError on an empty suffix", () => {
+		expect(() => buildChannel("acme", "")).toThrow(TypeError);
+	});
+});
+
+describe("buildChannel + parseChannel round-trip", () => {
+	it("parse(build(...)) recovers the tenant and suffix", () => {
+		expect(parseChannel(buildChannel("acme", "rooms.eng.messages"))).toEqual({
+			tenant: "acme",
+			suffix: "rooms.eng.messages",
+		});
 	});
 });
