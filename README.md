@@ -14,6 +14,12 @@ TypeScript SDK for the [Sukko](https://github.com/klurvio/sukko) real-time platf
 
 ## Quick Start
 
+Install the SDK and a transport:
+
+```bash
+npm install @sukko/sdk @sukko/websocket
+```
+
 ### Vanilla TypeScript
 
 ```ts
@@ -203,11 +209,12 @@ new SukkoClient(options: SukkoClientOptions)
 | `reconnectDelayMax` | `number` | `30000` | Max delay (ms) between reconnect attempts |
 | `heartbeatInterval` | `number` | `30000` | Heartbeat interval (ms) |
 | `heartbeatTimeout` | `number` | `5000` | Pong timeout (ms) |
+| `staleConnectionThreshold` | `number` | `30000` | Ms of inbound silence before the connection is treated as stale and recycled |
 | `getToken` | `() => Promise<string>` | — | Async token refresh callback |
 
 **Methods**: `connect()`, `disconnect()`, `subscribe(channels)`, `unsubscribe(channels)`, `publish(channel, data)`, `updateToken(token)`, `refreshToken()`, `reconnectWithReplay()`
 
-**Events**: `message`, `stateChange`, `subscriptionAck`, `unsubscriptionAck`, `publishAck`, `publishError`, `reconnectAck`, `reconnectError`, `pong`, `error`, `close`, `reconnecting`
+**Events**: `message`, `stateChange`, `subscriptionAck`, `subscribeError`, `unsubscriptionAck`, `unsubscribeError`, `publishAck`, `publishError`, `reconnectAck`, `reconnectError`, `authAck`, `authError`, `pong`, `error`, `close`, `reconnecting`
 
 ### `@sukko/websocket`
 

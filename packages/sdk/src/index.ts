@@ -51,5 +51,5 @@ export type {
 export { CLOSE_CODES, CLIENT_ID_KEY, SUKKO_DEFAULTS } from "./constants";
 
 // Utilities
-export { buildChannel, getChannelCategory, parseChannel } from "./utils";
+export { buildChannel, parseChannel } from "./utils";
 export type { ParsedChannel } from "./utils";
