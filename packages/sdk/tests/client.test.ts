@@ -272,7 +272,6 @@ describe("SukkoClient", () => {
 
 			transport.simulateMessage({
 				type: "message",
-				seq: 1,
 				ts: Date.now(),
 				channel: "tenant.BTC.trade",
 				data: { price: 50000 },
@@ -373,8 +372,8 @@ describe("SukkoClient", () => {
 	describe("heartbeat", () => {
 		it("sends heartbeat at configured interval", async () => {
 			const { client, transport } = createClient({
-				heartbeatInterval: 1000,
-				heartbeatTimeout: 500,
+				heartbeatIntervalMs: 1000,
+				pongTimeoutMs: 500,
 			});
 
 			client.connect();
@@ -395,8 +394,8 @@ describe("SukkoClient", () => {
 
 			const { client } = createClient({
 				transport,
-				heartbeatInterval: 1000,
-				heartbeatTimeout: 500,
+				heartbeatIntervalMs: 1000,
+				pongTimeoutMs: 500,
 			});
 
 			client.connect();
@@ -415,8 +414,8 @@ describe("SukkoClient", () => {
 
 			const { client } = createClient({
 				transport,
-				heartbeatInterval: 1000,
-				heartbeatTimeout: 500,
+				heartbeatIntervalMs: 1000,
+				pongTimeoutMs: 500,
 			});
 
 			client.connect();
@@ -530,9 +529,9 @@ describe("SukkoClient", () => {
 				transport,
 				autoConnect: true,
 				reconnect: true,
-				reconnectAttempts: 3,
-				reconnectDelayBase: 100,
-				reconnectDelayMax: 1000,
+				reconnectMaxAttempts: 3,
+				backoffBaseMs: 100,
+				backoffMaxMs: 1000,
 			});
 
 			await vi.advanceTimersByTimeAsync(0);
@@ -621,10 +620,10 @@ describe("SukkoClient", () => {
 				transport,
 				autoConnect: true,
 				reconnect: true,
-				heartbeatInterval: 100,
-				heartbeatTimeout: 50,
-				reconnectDelayBase: 1000,
-				reconnectDelayMax: 1000,
+				heartbeatIntervalMs: 100,
+				pongTimeoutMs: 50,
+				backoffBaseMs: 1000,
+				backoffMaxMs: 1000,
 			});
 			await vi.advanceTimersByTimeAsync(0);
 			openSpy.mockClear();
@@ -654,8 +653,8 @@ describe("SukkoClient", () => {
 				autoConnect: true,
 				reconnect: true,
 				clock,
-				reconnectDelayBase: 1000,
-				reconnectDelayMax: 1000,
+				backoffBaseMs: 1000,
+				backoffMaxMs: 1000,
 			});
 			await vi.advanceTimersByTimeAsync(0);
 
@@ -675,8 +674,8 @@ describe("SukkoClient", () => {
 				transport,
 				autoConnect: true,
 				reconnect: true,
-				reconnectDelayBase: 1000,
-				reconnectDelayMax: 1000,
+				backoffBaseMs: 1000,
+				backoffMaxMs: 1000,
 			});
 			await vi.advanceTimersByTimeAsync(0);
 			openSpy.mockClear();
@@ -696,8 +695,8 @@ describe("SukkoClient", () => {
 				transport,
 				autoConnect: true,
 				reconnect: true,
-				reconnectDelayBase: 1000,
-				reconnectDelayMax: 1000,
+				backoffBaseMs: 1000,
+				backoffMaxMs: 1000,
 			});
 			await vi.advanceTimersByTimeAsync(0);
 			client.disconnect(); // aborts shutdown
@@ -749,9 +748,9 @@ describe("SukkoClient", () => {
 				transport,
 				autoConnect: false,
 				reconnect: true,
-				reconnectAttempts: 2,
-				reconnectDelayBase: 100,
-				reconnectDelayMax: 500,
+				reconnectMaxAttempts: 2,
+				backoffBaseMs: 100,
+				backoffMaxMs: 500,
 			});
 
 			// Manually set up initial "connected" state, then let reconnection kick in
@@ -796,7 +795,6 @@ describe("SukkoClient", () => {
 			// Simulate a message with pos to populate lastPos
 			transport.simulateMessage({
 				type: "message",
-				seq: 42,
 				ts: Date.now(),
 				channel: "tenant.BTC.trade",
 				data: { price: 50000 },
@@ -827,7 +825,6 @@ describe("SukkoClient", () => {
 			// Simulate a message WITHOUT pos (e.g. Direct backend) — nothing to anchor a resume.
 			transport.simulateMessage({
 				type: "message",
-				seq: 1,
 				ts: Date.now(),
 				channel: "tenant.BTC.trade",
 				data: { price: 50000 },
@@ -852,7 +849,6 @@ describe("SukkoClient", () => {
 			// Channel with pos (Kafka backend)
 			transport.simulateMessage({
 				type: "message",
-				seq: 1,
 				ts: Date.now(),
 				channel: "tenant.BTC.trade",
 				data: {},
@@ -861,7 +857,6 @@ describe("SukkoClient", () => {
 			// Channel without pos (Direct backend)
 			transport.simulateMessage({
 				type: "message",
-				seq: 2,
 				ts: Date.now(),
 				channel: "tenant.ETH.trade",
 				data: {},
@@ -886,7 +881,6 @@ describe("SukkoClient", () => {
 			// Receive pos on two channels
 			transport.simulateMessage({
 				type: "message",
-				seq: 1,
 				ts: Date.now(),
 				channel: "tenant.BTC.trade",
 				data: {},
@@ -894,7 +888,6 @@ describe("SukkoClient", () => {
 			});
 			transport.simulateMessage({
 				type: "message",
-				seq: 2,
 				ts: Date.now(),
 				channel: "tenant.ETH.trade",
 				data: {},
@@ -925,8 +918,8 @@ describe("SukkoClient", () => {
 				transport,
 				autoConnect: true,
 				reconnect: true,
-				reconnectDelayBase: 1000,
-				reconnectDelayMax: 1000,
+				backoffBaseMs: 1000,
+				backoffMaxMs: 1000,
 			});
 			await vi.advanceTimersByTimeAsync(0);
 

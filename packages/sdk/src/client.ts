@@ -11,38 +11,31 @@ import {
 } from "./errors";
 import { HeartbeatMonitor } from "./heartbeat";
 import type {
+	AuthAck,
+	AuthError,
+	ClientMessage,
 	DeliveryItem,
+	ErrorMessage,
 	Gap,
 	HistoryComplete,
 	HistoryError,
-	HistoryMessage,
+	JsonObject,
 	Message,
+	Pong,
+	PublishAck,
+	PublishError,
+	ReconnectAck,
+	ReconnectError,
 	ReplayComplete,
 	ReplayMessage,
-	ReplayRequestMessage,
-	ErrorMessage as WireErrorMessage,
+	SubscribeError,
+	SubscriptionAck,
+	UnsubscribeError,
+	UnsubscriptionAck,
 } from "./messages";
+import type { ConnectionState, SukkoClientEvents, SukkoClientOptions } from "./options";
 import { type RecoveryAction, RecoveryEngine } from "./recovery";
 import type { Transport } from "./transport";
-import type {
-	AuthAckMessage,
-	AuthErrorMessage,
-	ClientMessage,
-	ConnectionState,
-	DataMessage,
-	ErrorMessage,
-	PongMessage,
-	PublishAckMessage,
-	PublishErrorMessage,
-	ReconnectAckMessage,
-	ReconnectErrorMessage,
-	SubscribeErrorMessage,
-	SubscriptionAckMessage,
-	SukkoClientEvents,
-	SukkoClientOptions,
-	UnsubscribeErrorMessage,
-	UnsubscriptionAckMessage,
-} from "./types";
 
 type ResolvedOptions = Required<
 	Omit<SukkoClientOptions, "transport" | "token" | "getToken" | "clock">
@@ -135,13 +128,13 @@ export class SukkoClient extends TypedEventEmitter<SukkoClientEvents> {
 		this.options = {
 			token: options.token ?? "",
 			reconnect: options.reconnect ?? true,
-			reconnectAttempts: options.reconnectAttempts ?? SUKKO_DEFAULTS.reconnectMaxAttempts,
-			reconnectDelayBase: options.reconnectDelayBase ?? SUKKO_DEFAULTS.backoffBaseMs,
-			reconnectDelayMax: options.reconnectDelayMax ?? SUKKO_DEFAULTS.backoffMaxMs,
-			heartbeatInterval: options.heartbeatInterval ?? SUKKO_DEFAULTS.heartbeatIntervalMs,
-			heartbeatTimeout: options.heartbeatTimeout ?? SUKKO_DEFAULTS.pongTimeoutMs,
-			staleConnectionThreshold:
-				options.staleConnectionThreshold ?? SUKKO_DEFAULTS.staleConnectionThresholdMs,
+			reconnectMaxAttempts: options.reconnectMaxAttempts ?? SUKKO_DEFAULTS.reconnectMaxAttempts,
+			backoffBaseMs: options.backoffBaseMs ?? SUKKO_DEFAULTS.backoffBaseMs,
+			backoffMaxMs: options.backoffMaxMs ?? SUKKO_DEFAULTS.backoffMaxMs,
+			heartbeatIntervalMs: options.heartbeatIntervalMs ?? SUKKO_DEFAULTS.heartbeatIntervalMs,
+			pongTimeoutMs: options.pongTimeoutMs ?? SUKKO_DEFAULTS.pongTimeoutMs,
+			staleConnectionThresholdMs:
+				options.staleConnectionThresholdMs ?? SUKKO_DEFAULTS.staleConnectionThresholdMs,
 			autoConnect: options.autoConnect ?? true,
 			getToken: options.getToken,
 		};
@@ -320,8 +313,9 @@ export class SukkoClient extends TypedEventEmitter<SukkoClientEvents> {
 	// Public API — Publishing
 	// ---------------------------------------------------------------------------
 
-	/** Publish a message to a channel. */
-	publish(channel: string, data: unknown): void {
+	/** Publish a JSON object to a channel. `data` must be an object — the contract's publish payload
+	 * (`PublishData.data`) is `type: object`, so a bare scalar is not a valid message body. */
+	publish(channel: string, data: JsonObject): void {
 		if (this.transport.state === "open") {
 			this.send({ type: "publish", data: { channel, data } });
 		}
@@ -501,7 +495,7 @@ export class SukkoClient extends TypedEventEmitter<SukkoClientEvents> {
 	// Internal — Message handling
 	// ---------------------------------------------------------------------------
 
-	private send(message: ClientMessage | ReplayRequestMessage | HistoryMessage): void {
+	private send(message: ClientMessage): void {
 		if (this.transport.state === "open") {
 			this.transport.send(JSON.stringify(message));
 		}
@@ -543,7 +537,7 @@ export class SukkoClient extends TypedEventEmitter<SukkoClientEvents> {
 					} else {
 						this.recovery.notePos(msg.channel, msg.pos); // anchor for the next reconnect-replay
 					}
-					this.emit("message", raw as unknown as DataMessage); // pre-queue tap (multicast, non-back-pressured)
+					this.emit("message", msg); // pre-queue tap (multicast, non-back-pressured)
 					this.enqueue(msg); // authoritative delivery stream
 					break;
 				}
@@ -596,25 +590,25 @@ export class SukkoClient extends TypedEventEmitter<SukkoClientEvents> {
 					break;
 				}
 				case "subscription_ack":
-					this.emit("subscriptionAck", raw as unknown as SubscriptionAckMessage);
+					this.emit("subscriptionAck", raw as unknown as SubscriptionAck);
 					break;
 				case "unsubscription_ack":
-					this.emit("unsubscriptionAck", raw as unknown as UnsubscriptionAckMessage);
+					this.emit("unsubscriptionAck", raw as unknown as UnsubscriptionAck);
 					break;
 				case "publish_ack":
-					this.emit("publishAck", raw as unknown as PublishAckMessage);
+					this.emit("publishAck", raw as unknown as PublishAck);
 					break;
 				case "publish_error":
-					this.emit("publishError", raw as unknown as PublishErrorMessage);
+					this.emit("publishError", raw as unknown as PublishError);
 					break;
 				case "reconnect_ack":
-					this.emit("reconnectAck", raw as unknown as ReconnectAckMessage);
+					this.emit("reconnectAck", raw as unknown as ReconnectAck);
 					break;
 				case "reconnect_error": {
 					// `not_available` is the Direct-backend capability signal, not a retryable error: degrade
 					// to resubscribe and surface one synthetic PossibleGap per channel. Any other code is a
 					// genuine reconnect failure → the typed event.
-					const err = raw as unknown as ReconnectErrorMessage;
+					const err = raw as unknown as ReconnectError;
 					if (err.code === "not_available") {
 						this.applyRecoveryActions(
 							this.recovery.handleNotAvailable(Array.from(this._subscriptions)),
@@ -626,32 +620,32 @@ export class SukkoClient extends TypedEventEmitter<SukkoClientEvents> {
 					break;
 				}
 				case "pong":
-					this.emit("pong", raw as unknown as PongMessage);
+					this.emit("pong", raw as unknown as Pong);
 					break;
 				case "error": {
 					// A channel-scoped replay/recovery error code means an in-flight replay failed: reset that
 					// channel's FSM and raise a single RecoveryInterrupted (never a stray error now plus a
 					// deadline-fired one later). Everything else is a plain protocol error → the typed event.
-					const err = raw as unknown as WireErrorMessage;
+					const err = raw as unknown as ErrorMessage;
 					if (err.channel !== undefined && REPLAY_ERROR_CODES.includes(err.code)) {
 						this.applyRecoveryActions(this.recovery.handleRecoveryFailure(err.channel, err.code));
 						this.wakeRecovery();
 					} else {
-						this.emit("error", raw as unknown as ErrorMessage);
+						this.emit("error", err);
 					}
 					break;
 				}
 				case "subscribe_error":
-					this.emit("subscribeError", raw as unknown as SubscribeErrorMessage);
+					this.emit("subscribeError", raw as unknown as SubscribeError);
 					break;
 				case "unsubscribe_error":
-					this.emit("unsubscribeError", raw as unknown as UnsubscribeErrorMessage);
+					this.emit("unsubscribeError", raw as unknown as UnsubscribeError);
 					break;
 				case "auth_ack":
-					this.emit("authAck", raw as unknown as AuthAckMessage);
+					this.emit("authAck", raw as unknown as AuthAck);
 					break;
 				case "auth_error":
-					this.emit("authError", raw as unknown as AuthErrorMessage);
+					this.emit("authError", raw as unknown as AuthError);
 					break;
 				default:
 					// Unknown/future message type — drop and continue for forward-compatibility (FR-025);
@@ -673,10 +667,10 @@ export class SukkoClient extends TypedEventEmitter<SukkoClientEvents> {
 			return;
 		}
 
-		// `reconnectAttempts === 0` means unlimited; otherwise, once attempts are exhausted the client
+		// `reconnectMaxAttempts === 0` means unlimited; otherwise, once attempts are exhausted the client
 		// gives up and enters the terminal `error` state — no indefinite retry (FR-018/FR-026).
-		const unlimited = this.options.reconnectAttempts === 0;
-		if (!unlimited && this.reconnectAttempt >= this.options.reconnectAttempts) {
+		const unlimited = this.options.reconnectMaxAttempts === 0;
+		if (!unlimited && this.reconnectAttempt >= this.options.reconnectMaxAttempts) {
 			this.setState("error");
 			return;
 		}
@@ -687,8 +681,8 @@ export class SukkoClient extends TypedEventEmitter<SukkoClientEvents> {
 		// Full Jitter (AWS): delay = random(0, min(cap, base * 2^(attempt-1))). Jitter is the whole
 		// point — pure exponential without it causes lock-step reconnect storms.
 		const ceiling = Math.min(
-			this.options.reconnectDelayMax,
-			this.options.reconnectDelayBase * 2 ** (this.reconnectAttempt - 1),
+			this.options.backoffMaxMs,
+			this.options.backoffBaseMs * 2 ** (this.reconnectAttempt - 1),
 		);
 		const delay = this.clock.rng() * ceiling;
 
@@ -802,10 +796,10 @@ export class SukkoClient extends TypedEventEmitter<SukkoClientEvents> {
 		if (!this.epoch) return;
 		this.heartbeat = new HeartbeatMonitor({
 			clock: this.clock,
-			intervalMs: this.options.heartbeatInterval,
-			pongTimeoutMs: this.options.heartbeatTimeout,
+			intervalMs: this.options.heartbeatIntervalMs,
+			pongTimeoutMs: this.options.pongTimeoutMs,
 			canSend: this.transport.capabilities.canSend,
-			send: () => this.send({ type: "heartbeat", data: {} as Record<string, never> }),
+			send: () => this.send({ type: "heartbeat" }),
 			onTimeout: () => this.handleHeartbeatTimeout(),
 		});
 		// The heartbeat loop error surfaces to the SDK logger once wired (parallel to _redact); a clean
@@ -852,7 +846,7 @@ export class SukkoClient extends TypedEventEmitter<SukkoClientEvents> {
 			if (document.visibilityState === "visible") {
 				const timeSinceActivity = Date.now() - this.lastActivityTimestamp;
 
-				if (timeSinceActivity > this.options.staleConnectionThreshold) {
+				if (timeSinceActivity > this.options.staleConnectionThresholdMs) {
 					this.forceReconnect();
 				} else if (this._state !== "connected") {
 					this.forceReconnect();

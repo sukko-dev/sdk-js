@@ -1,10 +1,10 @@
 import { SukkoClient } from "@sukko/sdk";
-import type { DataMessage } from "@sukko/sdk";
 import { TypedEventEmitter } from "@sukko/sdk";
 import type { Transport, TransportCapabilities, TransportEvents, TransportState } from "@sukko/sdk";
 import { act, cleanup, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { SukkoProvider } from "../src/context";
+import type { TypedMessage } from "../src/hooks/use-subscription";
 import { useSubscription } from "../src/hooks/use-subscription";
 
 afterEach(cleanup);
@@ -50,7 +50,7 @@ function TestSubscriber({
 }: {
 	channels: string[];
 	enabled?: boolean;
-	onMessage?: (msg: DataMessage<TestData>) => void;
+	onMessage?: (msg: TypedMessage<TestData>) => void;
 }) {
 	const { lastMessage, data, isSubscribed } = useSubscription<TestData>({
 		channels,
@@ -90,9 +90,8 @@ describe("useSubscription", () => {
 			</SukkoProvider>,
 		);
 
-		const msg: DataMessage<TestData> = {
+		const msg: TypedMessage<TestData> = {
 			type: "message",
-			seq: 1,
 			ts: Date.now(),
 			channel: "tenant.BTC.trade",
 			data: { price: 50000 },
@@ -115,9 +114,8 @@ describe("useSubscription", () => {
 			</SukkoProvider>,
 		);
 
-		const msg: DataMessage<TestData> = {
+		const msg: TypedMessage<TestData> = {
 			type: "message",
-			seq: 1,
 			ts: Date.now(),
 			channel: "tenant.ETH.trade",
 			data: { price: 3000 },
@@ -141,9 +139,8 @@ describe("useSubscription", () => {
 			</SukkoProvider>,
 		);
 
-		const msg: DataMessage<TestData> = {
+		const msg: TypedMessage<TestData> = {
 			type: "message",
-			seq: 1,
 			ts: Date.now(),
 			channel: "tenant.BTC.trade",
 			data: { price: 50000 },
@@ -197,11 +194,10 @@ describe("useSubscription", () => {
 		act(() => {
 			(client as any).emit("message", {
 				type: "message",
-				seq: 1,
 				ts: Date.now(),
 				channel: "tenant.BTC.trade",
 				data: { price: 50000 },
-			} satisfies DataMessage<TestData>);
+			} satisfies TypedMessage<TestData>);
 		});
 
 		expect(screen.getByTestId("data").textContent).toBe('{"price":50000}');
@@ -209,11 +205,10 @@ describe("useSubscription", () => {
 		act(() => {
 			(client as any).emit("message", {
 				type: "message",
-				seq: 2,
 				ts: Date.now(),
 				channel: "tenant.BTC.trade",
 				data: { price: 51000 },
-			} satisfies DataMessage<TestData>);
+			} satisfies TypedMessage<TestData>);
 		});
 
 		expect(screen.getByTestId("data").textContent).toBe('{"price":51000}');

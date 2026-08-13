@@ -1,12 +1,7 @@
 import { SukkoClient, TypedEventEmitter } from "@sukko/sdk";
-import type {
-	DataMessage,
-	Transport,
-	TransportCapabilities,
-	TransportEvents,
-	TransportState,
-} from "@sukko/sdk";
+import type { Transport, TransportCapabilities, TransportEvents, TransportState } from "@sukko/sdk";
 import { describe, expect, it, vi } from "vitest";
+import type { TypedMessage } from "../src/stores/subscription";
 
 class MockTransport extends TypedEventEmitter<TransportEvents> implements Transport {
 	private _state: TransportState = "closed";
@@ -77,15 +72,14 @@ describe("createSubscription", () => {
 		mockClient = createClient();
 
 		const store = createSubscription<TestData>({ channels: ["tenant.BTC.trade"] });
-		let value: { data: TestData | null; lastMessage: DataMessage<TestData> | null } | undefined;
+		let value: { data: TestData | null; lastMessage: TypedMessage<TestData> | null } | undefined;
 
 		const unsub = store.subscribe((v) => {
 			value = v;
 		});
 
-		const msg: DataMessage<TestData> = {
+		const msg: TypedMessage<TestData> = {
 			type: "message",
-			seq: 1,
 			ts: Date.now(),
 			channel: "tenant.BTC.trade",
 			data: { price: 50000 },
@@ -114,11 +108,10 @@ describe("createSubscription", () => {
 		// biome-ignore lint/suspicious/noExplicitAny: test access to private emitter
 		(mockClient as any).emit("message", {
 			type: "message",
-			seq: 1,
 			ts: Date.now(),
 			channel: "tenant.ETH.trade",
 			data: { price: 3000 },
-		} satisfies DataMessage<TestData>);
+		} satisfies TypedMessage<TestData>);
 
 		expect(updateCount).toBe(initialCount); // no update for wrong channel
 		unsub();
@@ -138,11 +131,10 @@ describe("createSubscription", () => {
 		// biome-ignore lint/suspicious/noExplicitAny: test access to private emitter
 		(mockClient as any).emit("message", {
 			type: "message",
-			seq: 1,
 			ts: Date.now(),
 			channel: "tenant.BTC.trade",
 			data: { price: 50000 },
-		} satisfies DataMessage<TestData>);
+		} satisfies TypedMessage<TestData>);
 
 		expect(onMessage).toHaveBeenCalledOnce();
 		expect(onMessage.mock.calls[0][0].data.price).toBe(50000);

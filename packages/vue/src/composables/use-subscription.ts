@@ -1,4 +1,4 @@
-import type { DataMessage } from "@sukko/sdk";
+import type { Message } from "@sukko/sdk";
 import {
 	type ComputedRef,
 	type MaybeRefOrGetter,
@@ -13,18 +13,22 @@ import {
 } from "vue";
 import { useSukkoClient } from "../context";
 
+/** A broadcast `Message` with its `data` narrowed to the caller's payload type `T`. The SDK models
+ * `Message.data` as an opaque JSON object; this Vue binding layers the generic `T` convenience. */
+export type TypedMessage<T = unknown> = Omit<Message, "data"> & { data: T };
+
 export interface UseSubscriptionOptions<T = unknown> {
 	/** Channels to subscribe to. Can be a ref or getter for reactivity. */
 	channels: MaybeRefOrGetter<string[]>;
 	/** Enable/disable the subscription. Can be a ref or getter. Default: true. */
 	enabled?: MaybeRefOrGetter<boolean>;
 	/** Callback fired on each incoming message. */
-	onMessage?: (msg: DataMessage<T>) => void;
+	onMessage?: (msg: TypedMessage<T>) => void;
 }
 
 export interface UseSubscriptionResult<T = unknown> {
 	/** The most recent message received on any subscribed channel. */
-	lastMessage: ShallowRef<DataMessage<T> | null>;
+	lastMessage: ShallowRef<TypedMessage<T> | null>;
 	/** The data payload of the most recent message. */
 	data: ComputedRef<T | null>;
 	/** Whether channels are actively subscribed. */
@@ -51,7 +55,7 @@ export function useSubscription<T = unknown>(
 	options: UseSubscriptionOptions<T>,
 ): UseSubscriptionResult<T> {
 	const client = useSukkoClient();
-	const lastMessage = shallowRef<DataMessage<T> | null>(null);
+	const lastMessage = shallowRef<TypedMessage<T> | null>(null);
 	const isSubscribed = ref(false);
 	let offMessage: (() => void) | undefined;
 
@@ -71,10 +75,10 @@ export function useSubscription<T = unknown>(
 		}
 
 		// Listen for messages on subscribed channels
-		offMessage = client.on("message", (msg: DataMessage) => {
+		offMessage = client.on("message", (msg: Message) => {
 			if (channels.includes(msg.channel)) {
-				lastMessage.value = msg as DataMessage<T>;
-				options.onMessage?.(msg as DataMessage<T>);
+				lastMessage.value = msg as TypedMessage<T>;
+				options.onMessage?.(msg as TypedMessage<T>);
 			}
 		});
 

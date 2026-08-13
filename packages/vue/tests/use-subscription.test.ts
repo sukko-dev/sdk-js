@@ -1,14 +1,9 @@
 import { SukkoClient, TypedEventEmitter } from "@sukko/sdk";
-import type {
-	DataMessage,
-	Transport,
-	TransportCapabilities,
-	TransportEvents,
-	TransportState,
-} from "@sukko/sdk";
+import type { Transport, TransportCapabilities, TransportEvents, TransportState } from "@sukko/sdk";
 import { mount } from "@vue/test-utils";
 import { describe, expect, it, vi } from "vitest";
 import { defineComponent, h, nextTick } from "vue";
+import type { TypedMessage } from "../src/composables/use-subscription";
 import { useSubscription } from "../src/composables/use-subscription";
 import { SukkoProvider } from "../src/context";
 
@@ -48,7 +43,7 @@ function createClient(): SukkoClient {
 function createTestSubscriber(props: {
 	channels: string[];
 	enabled?: boolean;
-	onMessage?: (msg: DataMessage<TestData>) => void;
+	onMessage?: (msg: TypedMessage<TestData>) => void;
 }) {
 	return defineComponent({
 		setup() {
@@ -90,9 +85,8 @@ describe("useSubscription", () => {
 			slots: { default: () => h(TestSub) },
 		});
 
-		const msg: DataMessage<TestData> = {
+		const msg: TypedMessage<TestData> = {
 			type: "message",
-			seq: 1,
 			ts: Date.now(),
 			channel: "tenant.BTC.trade",
 			data: { price: 50000 },
@@ -115,9 +109,8 @@ describe("useSubscription", () => {
 			slots: { default: () => h(TestSub) },
 		});
 
-		const msg: DataMessage<TestData> = {
+		const msg: TypedMessage<TestData> = {
 			type: "message",
-			seq: 1,
 			ts: Date.now(),
 			channel: "tenant.ETH.trade",
 			data: { price: 3000 },
@@ -144,9 +137,8 @@ describe("useSubscription", () => {
 			slots: { default: () => h(TestSub) },
 		});
 
-		const msg: DataMessage<TestData> = {
+		const msg: TypedMessage<TestData> = {
 			type: "message",
-			seq: 1,
 			ts: Date.now(),
 			channel: "tenant.BTC.trade",
 			data: { price: 50000 },
@@ -202,11 +194,10 @@ describe("useSubscription", () => {
 		// biome-ignore lint/suspicious/noExplicitAny: test access to private emitter
 		(client as any).emit("message", {
 			type: "message",
-			seq: 1,
 			ts: Date.now(),
 			channel: "tenant.BTC.trade",
 			data: { price: 50000 },
-		} satisfies DataMessage<TestData>);
+		} satisfies TypedMessage<TestData>);
 		await nextTick();
 
 		expect(wrapper.find('[data-testid="data"]').text()).toBe('{"price":50000}');
@@ -214,11 +205,10 @@ describe("useSubscription", () => {
 		// biome-ignore lint/suspicious/noExplicitAny: test access to private emitter
 		(client as any).emit("message", {
 			type: "message",
-			seq: 2,
 			ts: Date.now(),
 			channel: "tenant.BTC.trade",
 			data: { price: 51000 },
-		} satisfies DataMessage<TestData>);
+		} satisfies TypedMessage<TestData>);
 		await nextTick();
 
 		expect(wrapper.find('[data-testid="data"]').text()).toBe('{"price":51000}');

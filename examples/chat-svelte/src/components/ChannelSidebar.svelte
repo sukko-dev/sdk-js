@@ -1,5 +1,5 @@
 <script lang="ts">
-import type { DataMessage } from "@sukko/sdk";
+import type { Message } from "@sukko/sdk";
 import { getSukkoClient } from "@sukko/svelte";
 import type { ChatMessage } from "../utils";
 import { createMessageId, decodeTokenPayload } from "../utils";
@@ -30,7 +30,7 @@ $effect(() => {
 
 	client.subscribe(channels);
 
-	const off = client.on("message", (msg: DataMessage) => {
+	const off = client.on("message", (msg: Message) => {
 		if (channels.includes(msg.channel)) {
 			const d = msg.data as Record<string, unknown>;
 			onMessage({

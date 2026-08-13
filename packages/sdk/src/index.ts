@@ -13,14 +13,15 @@ export type {
 	TransportState,
 } from "./transport";
 
-// Protocol types
+// Client configuration + event surface
+export type { ConnectionState, SukkoClientEvents, SukkoClientOptions } from "./options";
+
+// Protocol + delivery-stream types — the single AsyncAPI-derived contract model (`./messages`). The
+// `message` tap and the `messages()` delivery stream share one `Message` type. (The full public-API
+// surface cleanup — adding/removing exports per the disposition table — lands in the T041 pass.)
 export type {
-	// Connection
-	ConnectionState,
-	SukkoClientEvents,
-	SukkoClientOptions,
 	// Client → Server
-	AuthRefreshMessage,
+	AuthMessage,
 	ClientMessage,
 	HeartbeatMessage,
 	PublishMessage,
@@ -28,36 +29,31 @@ export type {
 	SubscribeMessage,
 	UnsubscribeMessage,
 	// Server → Client
-	AuthAckMessage,
+	AuthAck,
 	AuthErrorCode,
-	AuthErrorMessage,
-	DataMessage,
+	AuthError,
 	ErrorMessage,
-	PongMessage,
-	PublishAckMessage,
-	PublishErrorCode,
-	PublishErrorMessage,
-	ReconnectAckMessage,
-	ReconnectErrorCode,
-	ReconnectErrorMessage,
-	ServerMessage,
-	SubscribeErrorMessage,
-	SubscriptionAckMessage,
-	UnsubscribeErrorMessage,
-	UnsubscriptionAckMessage,
-} from "./types";
-
-// Delivery-stream types — what `client.messages()` yields (the authoritative, back-pressured
-// surface). Distinct from the `./types` protocol types above, which back the `.on("message")` tap;
-// the two message models coexist transitionally until the T009b switch to `./messages`.
-export type {
-	DeliveryItem,
+	JsonObject,
 	Message,
-	ReplayMessage,
+	Pong,
+	PublishAck,
+	PublishErrorCode,
+	PublishError,
+	ReconnectAck,
+	ReconnectErrorCode,
+	ReconnectError,
+	ServerMessage,
+	SubscribeError,
+	SubscriptionAck,
+	UnsubscribeError,
+	UnsubscriptionAck,
+	// Delivery stream (`messages()`)
+	DeliveryItem,
 	Gap,
-	PossibleGap,
-	Overflow,
 	HistoryError,
+	Overflow,
+	PossibleGap,
+	ReplayMessage,
 } from "./messages";
 
 // Errors — the SukkoError base (catch-all) plus every error a public method throws or an event carries:

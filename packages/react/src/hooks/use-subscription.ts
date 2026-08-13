@@ -1,6 +1,10 @@
-import type { DataMessage } from "@sukko/sdk";
+import type { Message } from "@sukko/sdk";
 import { useCallback, useEffect, useMemo, useRef, useSyncExternalStore } from "react";
 import { useSukkoClient } from "./use-client";
+
+/** A broadcast `Message` with its `data` narrowed to the caller's payload type `T`. The SDK models
+ * `Message.data` as an opaque JSON object; this React binding layers the generic `T` convenience. */
+export type TypedMessage<T = unknown> = Omit<Message, "data"> & { data: T };
 
 export interface UseSubscriptionOptions<T = unknown> {
 	/** Channels to subscribe to. */
@@ -8,12 +12,12 @@ export interface UseSubscriptionOptions<T = unknown> {
 	/** Enable/disable the subscription. Default: true. */
 	enabled?: boolean;
 	/** Callback fired on each incoming message. */
-	onMessage?: (msg: DataMessage<T>) => void;
+	onMessage?: (msg: TypedMessage<T>) => void;
 }
 
 export interface UseSubscriptionResult<T = unknown> {
 	/** The most recent message received on any subscribed channel. */
-	lastMessage: DataMessage<T> | null;
+	lastMessage: TypedMessage<T> | null;
 	/** The data payload of the most recent message. */
 	data: T | null;
 	/** Whether channels are actively subscribed. */
@@ -46,7 +50,7 @@ export function useSubscription<T = unknown>(
 	const channelKey = useMemo(() => [...channels].sort().join(","), [channels]);
 
 	// Latest message snapshot (mutable ref for useSyncExternalStore)
-	const snapshotRef = useRef<DataMessage<T> | null>(null);
+	const snapshotRef = useRef<TypedMessage<T> | null>(null);
 	const versionRef = useRef(0);
 
 	// Stable onMessage ref
@@ -60,11 +64,11 @@ export function useSubscription<T = unknown>(
 	// biome-ignore lint/correctness/useExhaustiveDependencies: channels is captured via channelKey which provides stable identity
 	const subscribe = useCallback(
 		(onStoreChange: () => void): (() => void) => {
-			const off = client.on("message", (msg: DataMessage) => {
+			const off = client.on("message", (msg: Message) => {
 				if (channels.includes(msg.channel)) {
-					snapshotRef.current = msg as DataMessage<T>;
+					snapshotRef.current = msg as TypedMessage<T>;
 					versionRef.current++;
-					onMessageRef.current?.(msg as DataMessage<T>);
+					onMessageRef.current?.(msg as TypedMessage<T>);
 					onStoreChange();
 				}
 			});
@@ -74,11 +78,11 @@ export function useSubscription<T = unknown>(
 		[client, channelKey],
 	);
 
-	const getSnapshot = useCallback((): DataMessage<T> | null => {
+	const getSnapshot = useCallback((): TypedMessage<T> | null => {
 		return snapshotRef.current;
 	}, []);
 
-	const getServerSnapshot = useCallback((): DataMessage<T> | null => {
+	const getServerSnapshot = useCallback((): TypedMessage<T> | null => {
 		return null;
 	}, []);
 
