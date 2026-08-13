@@ -1,13 +1,8 @@
+import { type Clock, SystemClock } from "./_clock";
 import { DeliveryQueue } from "./backpressure";
-import {
-	CLIENT_ID_KEY,
-	CLOSE_CODES,
-	type CloseDirection,
-	SUKKO_DEFAULTS,
-	isForceDisconnect,
-	isHeartbeatTimeout,
-} from "./constants";
+import { CLIENT_ID_KEY, CLOSE_CODES, SUKKO_DEFAULTS } from "./constants";
 import { TypedEventEmitter } from "./emitter";
+import { HeartbeatMonitor } from "./heartbeat";
 import type { DeliveryItem, Message } from "./messages";
 import type { Transport } from "./transport";
 import type {
@@ -74,11 +69,6 @@ export class SukkoClient extends TypedEventEmitter<SukkoClientEvents> {
 	// Reconnection
 	private reconnectAttempt = 0;
 
-	// The close code the CLIENT last initiated (e.g. a heartbeat-timeout 4000), so a close event can
-	// be attributed local vs remote — 4000 means heartbeat-timeout (local, reconnect) or
-	// force_disconnect (remote, terminal) depending on direction (FR-019).
-	private localCloseCode: number | null = null;
-
 	// Subscriptions
 	private _subscriptions = new Set<string>();
 
@@ -93,10 +83,17 @@ export class SukkoClient extends TypedEventEmitter<SukkoClientEvents> {
 	private lastPos = new Map<string, string>();
 	private lastActivityTimestamp: number = Date.now();
 
+	// Timing seam (NFR-006). Internal SystemClock for now — its setTimeout/Date.now remain compatible
+	// with vi fake timers in tests; the injectable-clock option lands with the full T026 supervisor.
+	private readonly clock: Clock = new SystemClock();
+
+	// Per-connection epoch: an AbortController scoping the heartbeat loop; aborted on close/reconnect
+	// (the TaskGroup analog). The reconnect backoff still uses a setTimeout for now.
+	private epoch: AbortController | null = null;
+	private heartbeat: HeartbeatMonitor | null = null;
+
 	// Timers
 	private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
-	private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
-	private pongTimeout: ReturnType<typeof setTimeout> | null = null;
 
 	// Network listeners
 	private boundHandleOnline: (() => void) | null = null;
@@ -230,12 +227,10 @@ export class SukkoClient extends TypedEventEmitter<SukkoClientEvents> {
 	connect(): void {
 		if (this.transport.state === "opening" || this.transport.state === "open") return;
 
-		// Reset the close-direction latch at the epoch boundary so a heartbeat-timeout 4000 set in a
-		// prior epoch (but never consumed by handleTransportClose, e.g. after disconnect()) can't
-		// mis-attribute a later REMOTE force_disconnect 4000 as local (FR-019 safety).
-		this.localCloseCode = null;
 		this.setState("connecting");
 		this.clearTimers();
+		this.teardownEpoch(); // abort any stale epoch before opening a fresh one
+		this.epoch = new AbortController();
 		this.transport.setToken(this.options.token);
 		this.transport.open();
 	}
@@ -243,6 +238,7 @@ export class SukkoClient extends TypedEventEmitter<SukkoClientEvents> {
 	/** Disconnect intentionally (no automatic reconnection). */
 	disconnect(): void {
 		this.clearTimers();
+		this.teardownEpoch();
 
 		// Remove transport close listener before closing to prevent
 		// duplicate state/event emission from the close handler.
@@ -390,28 +386,22 @@ export class SukkoClient extends TypedEventEmitter<SukkoClientEvents> {
 		}
 	}
 
+	/**
+	 * Handles a SERVER or network-initiated close. Client-initiated closes (disconnect, forceReconnect,
+	 * heartbeat timeout) do NOT reach here — the transport suppresses their close echo — so a 4000 seen
+	 * here is always an operator `force_disconnect` (remote), never a local heartbeat timeout.
+	 */
 	private handleTransportClose(code: number, reason: string): void {
-		this.stopHeartbeat();
+		this.teardownEpoch();
 		this.emit("close", code, reason);
 
-		// Attribute the close: a 4000 the client itself initiated (heartbeat timeout) is `local`;
-		// otherwise it is `remote` (an operator force_disconnect).
-		const localCode = this.localCloseCode;
-		this.localCloseCode = null;
-		const direction: CloseDirection = localCode === code ? "local" : "remote";
-
 		// Per-close-code reconnect policy (FR-019).
-		if (isHeartbeatTimeout(code, direction)) {
-			// Local 4000 — our own heartbeat timeout fired; the connection is dead → reconnect.
-			this.handleReconnect();
-			return;
-		}
 		if (
-			isForceDisconnect(code, direction) || // remote 4000 operator force-disconnect — terminal
 			code === CLOSE_CODES.NORMAL || // 1000 clean shutdown
-			code === CLOSE_CODES.POLICY_VIOLATION // 1008 policy violation — not transient
+			code === CLOSE_CODES.POLICY_VIOLATION || // 1008 policy violation — not transient
+			code === CLOSE_CODES.FORCE_DISCONNECT // 4000 operator force-disconnect — terminal
 		) {
-			// TODO(T026): 1008 and remote-4000 should also surface a TYPED error on the error channel
+			// TODO(T026): 1008 and force_disconnect should also surface a TYPED error on the error channel
 			// (FR-019 / Scenario 6 AC2). Deferred to the supervisor rewrite that builds that channel —
 			// until then the terminal cause is observable via the `close` event's code (emitted above).
 			this.setState("disconnected");
@@ -453,11 +443,8 @@ export class SukkoClient extends TypedEventEmitter<SukkoClientEvents> {
 	private handleMessage(data: string): void {
 		this.lastActivityTimestamp = Date.now();
 
-		// Any message from server clears pong timeout
-		if (this.pongTimeout) {
-			clearTimeout(this.pongTimeout);
-			this.pongTimeout = null;
-		}
+		// Any inbound frame confirms liveness for the heartbeat monitor.
+		this.heartbeat?.noteActivity();
 
 		try {
 			const raw = JSON.parse(data) as { type: string };
@@ -555,34 +542,42 @@ export class SukkoClient extends TypedEventEmitter<SukkoClientEvents> {
 	// Internal — Heartbeat
 	// ---------------------------------------------------------------------------
 
+	/** Start the per-epoch heartbeat monitor (canSend-gated, runs on the injected clock until the epoch aborts). */
 	private startHeartbeat(): void {
-		this.stopHeartbeat();
-
-		this.heartbeatTimer = setInterval(() => {
-			if (this.transport.state === "open") {
-				this.send({ type: "heartbeat", data: {} as Record<string, never> });
-
-				this.pongTimeout = setTimeout(() => {
-					this.localCloseCode = CLOSE_CODES.HEARTBEAT_TIMEOUT; // local 4000 → reconnect (FR-019)
-					this.transport.close(CLOSE_CODES.HEARTBEAT_TIMEOUT, "Heartbeat timeout");
-				}, this.options.heartbeatTimeout);
-			}
-		}, this.options.heartbeatInterval);
+		if (!this.epoch) return;
+		this.heartbeat = new HeartbeatMonitor({
+			clock: this.clock,
+			intervalMs: this.options.heartbeatInterval,
+			pongTimeoutMs: this.options.heartbeatTimeout,
+			canSend: this.transport.capabilities.canSend,
+			send: () => this.send({ type: "heartbeat", data: {} as Record<string, never> }),
+			onTimeout: () => this.handleHeartbeatTimeout(),
+		});
+		// The heartbeat loop error surfaces to the SDK logger once wired (parallel to _redact); a clean
+		// abort is caught inside run(). Guarded so a transport-agnostic send/close throw isn't unhandled.
+		void this.heartbeat.run(this.epoch.signal).catch(() => {});
 	}
 
-	private stopHeartbeat(): void {
-		if (this.heartbeatTimer) {
-			clearInterval(this.heartbeatTimer);
-			this.heartbeatTimer = null;
-		}
-		if (this.pongTimeout) {
-			clearTimeout(this.pongTimeout);
-			this.pongTimeout = null;
-		}
+	/**
+	 * A local heartbeat timeout — the connection is dead. Client-initiated `close()` does NOT echo back
+	 * through `handleTransportClose` (the transport nulls its close handler before closing), so we drive
+	 * teardown + the reconnect path directly here (FR-019: local 4000 → reconnect).
+	 */
+	private handleHeartbeatTimeout(): void {
+		this.teardownEpoch();
+		this.transport.close(CLOSE_CODES.HEARTBEAT_TIMEOUT, "Heartbeat timeout");
+		this.emit("close", CLOSE_CODES.HEARTBEAT_TIMEOUT, "Heartbeat timeout");
+		this.handleReconnect();
+	}
+
+	/** Tear down the current connection epoch — aborts the heartbeat loop (the TaskGroup analog). */
+	private teardownEpoch(): void {
+		this.epoch?.abort();
+		this.epoch = null;
+		this.heartbeat = null;
 	}
 
 	private clearTimers(): void {
-		this.stopHeartbeat();
 		if (this.reconnectTimer) {
 			clearTimeout(this.reconnectTimer);
 			this.reconnectTimer = null;

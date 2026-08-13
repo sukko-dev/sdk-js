@@ -106,6 +106,7 @@ describe("SukkoClient", () => {
 
 	afterEach(() => {
 		vi.useRealTimers();
+		vi.restoreAllMocks();
 	});
 
 	describe("construction", () => {
@@ -605,48 +606,34 @@ describe("SukkoClient", () => {
 			expect(client.state).toBe("disconnected");
 		});
 
-		it("resets the close-direction latch across epochs so a stranded local 4000 can't mask a remote force_disconnect", async () => {
+		it("reconnects on a heartbeat timeout and actually re-opens after backoff (no server close echo)", async () => {
+			vi.spyOn(Math, "random").mockReturnValue(0.5); // deterministic Full-Jitter delay (restored in afterEach)
 			const transport = new MockTransport();
+			const openSpy = vi.spyOn(transport, "open");
 			const client = new SukkoClient({
 				transport,
 				autoConnect: true,
 				reconnect: true,
 				heartbeatInterval: 100,
 				heartbeatTimeout: 50,
+				reconnectDelayBase: 1000,
+				reconnectDelayMax: 1000,
 			});
-			await vi.advanceTimersByTimeAsync(0);
-			// Latch localCloseCode=4000 via the heartbeat pong-timeout (the mock's close emits nothing,
-			// so handleTransportClose never consumes the latch).
-			await vi.advanceTimersByTimeAsync(160);
-			// Tear down and start a fresh epoch — connect() must clear the stranded latch.
-			client.disconnect();
-			const openSpy = vi.spyOn(transport, "open");
-			client.connect();
 			await vi.advanceTimersByTimeAsync(0);
 			openSpy.mockClear();
-			// A genuine REMOTE force_disconnect must stay terminal, not be mis-read as the stale latch.
-			transport.simulateClose(CLOSE_CODES.FORCE_DISCONNECT, "force disconnect");
-			await vi.advanceTimersByTimeAsync(5000);
-			expect(openSpy).not.toHaveBeenCalled();
-			expect(client.state).toBe("disconnected");
-		});
 
-		it("reconnects on a LOCAL 4000 (heartbeat timeout)", async () => {
-			const transport = new MockTransport();
-			const client = new SukkoClient({
-				transport,
-				autoConnect: true,
-				reconnect: true,
-				heartbeatInterval: 100,
-				heartbeatTimeout: 50,
-			});
-			await vi.advanceTimersByTimeAsync(0);
+			// Heartbeat goes out at 100; its pong window (50) elapses at t=150 with no inbound frame → the
+			// monitor fires onTimeout → the client tears the epoch down and reconnects WITHOUT any transport
+			// close echo (client-initiated close() is suppressed by the transport). No simulateClose needed.
+			// Backoff delay = 0.5 * min(1000, 1000) = 500, so connect() is scheduled for t=650.
+			await vi.advanceTimersByTimeAsync(300); // t=300 < 650 → still backing off
+			expect(client.state).toBe("reconnecting");
 
-			// Fire a heartbeat then let its pong window elapse — the client sets localCloseCode=4000 and
-			// closes. The real transport would emit close(4000); the mock doesn't, so we fire it.
-			await vi.advanceTimersByTimeAsync(160);
-			transport.simulateClose(CLOSE_CODES.HEARTBEAT_TIMEOUT, "Heartbeat timeout");
-			expect(client.state).toBe("reconnecting"); // local 4000 → reconnect
+			// Past the backoff — the scheduled connect() must actually RE-OPEN the socket (proving the
+			// close-before-reconnect ordering), not no-op against a not-yet-closed transport.
+			await vi.advanceTimersByTimeAsync(400); // t=700 > 650
+			expect(openSpy).toHaveBeenCalled();
+			expect(client.state).toBe("connected");
 			client.disconnect();
 		});
 

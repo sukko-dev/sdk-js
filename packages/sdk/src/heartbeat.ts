@@ -1,10 +1,6 @@
-// Heartbeat / liveness monitor (T028, FR-024).
-//
-// STAGING NOTE: this is T026-supervisor groundwork, built and unit-tested here but not yet wired into
-// `SukkoClient` (which still runs an inline `setInterval` heartbeat). The T026 rewrite constructs one
-// `HeartbeatMonitor` per connection epoch, feeds it `noteActivity()` from the read-pump, and DELETES
-// the inline heartbeat — so only one implementation ships. Same staged-with-tests pattern as
-// `recovery.ts`. Until then the two coexist transiently on the not-yet-rewritten client.
+// Heartbeat / liveness monitor (T028, FR-024). `SukkoClient` constructs one HeartbeatMonitor per
+// connection epoch, drives it with the client's injected `Clock`, feeds `noteActivity()` from the
+// message handler, and tears it down via the epoch `AbortController`.
 //
 // Runs ONLY on a send-capable (WS) transport: it sends
 // the app-level `heartbeat` message every `intervalMs`, then waits `pongTimeoutMs` for ANY inbound

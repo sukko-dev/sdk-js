@@ -33,24 +33,19 @@ export const CLOSE_CODES = {
 	POLICY_VIOLATION: 1008,
 	/** Server internal error. */
 	INTERNAL_ERROR: 1011,
-	/** Local (self-initiated) close: heartbeat pong timeout. Same code as FORCE_DISCONNECT — disambiguated by direction. */
+	/** Local (self-initiated) close: heartbeat pong timeout. Same numeric code as FORCE_DISCONNECT, but a local timeout never reaches `handleTransportClose` — see the NOTE below. */
 	HEARTBEAT_TIMEOUT: 4000,
 	/** Remote (operator-initiated) close: server force-disconnected this client. Terminal — no auto-reconnect (FR-019). */
 	FORCE_DISCONNECT: 4000,
 } as const;
 
-/** Whether a close was initiated by this client (`local`) or by the server (`remote`) — 4000 needs this to disambiguate. */
+/** Whether a close was initiated by this client (`local`) or by the peer (`remote`) — carried on a `ConnectionClosedError`. */
 export type CloseDirection = "local" | "remote";
 
-/** True when the close is an operator-initiated `force_disconnect` (remote 4000) — terminal, no reconnect. */
-export function isForceDisconnect(code: number, direction: CloseDirection): boolean {
-	return code === CLOSE_CODES.FORCE_DISCONNECT && direction === "remote";
-}
-
-/** True when the close is a local heartbeat-timeout (self-initiated 4000) — reconnect with backoff. */
-export function isHeartbeatTimeout(code: number, direction: CloseDirection): boolean {
-	return code === CLOSE_CODES.HEARTBEAT_TIMEOUT && direction === "local";
-}
+// NOTE: in the client, close direction is disambiguated by ROUTING, not a flag — a client-initiated
+// close (disconnect / heartbeat timeout) never reaches `handleTransportClose` (the transport
+// suppresses its close echo), so a 4000 seen there is always a remote `force_disconnect` (terminal); a
+// local heartbeat-timeout 4000 is handled directly (reconnect). See client.ts `handleHeartbeatTimeout`.
 
 /** localStorage key for persistent client ID. */
 export const CLIENT_ID_KEY = "sukko_client_id";
