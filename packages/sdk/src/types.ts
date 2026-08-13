@@ -196,6 +196,7 @@ export type SukkoClientEvents = {
 // Client configuration
 // ---------------------------------------------------------------------------
 
+import type { Clock } from "./_clock";
 import type { Transport } from "./transport";
 
 export interface SukkoClientOptions {
@@ -221,4 +222,6 @@ export interface SukkoClientOptions {
 	autoConnect?: boolean;
 	/** Async callback to fetch a fresh token. Called during auth refresh. */
 	getToken?: () => Promise<string>;
+	/** Injectable clock/sleep/RNG seam (NFR-006) for deterministic timing tests. Default: SystemClock. */
+	clock?: Clock;
 }

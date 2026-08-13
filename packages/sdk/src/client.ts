@@ -25,7 +25,9 @@ import type {
 	UnsubscriptionAckMessage,
 } from "./types";
 
-type ResolvedOptions = Required<Omit<SukkoClientOptions, "transport" | "token" | "getToken">> & {
+type ResolvedOptions = Required<
+	Omit<SukkoClientOptions, "transport" | "token" | "getToken" | "clock">
+> & {
 	token: string;
 	getToken: SukkoClientOptions["getToken"];
 };
@@ -83,17 +85,18 @@ export class SukkoClient extends TypedEventEmitter<SukkoClientEvents> {
 	private lastPos = new Map<string, string>();
 	private lastActivityTimestamp: number = Date.now();
 
-	// Timing seam (NFR-006). Internal SystemClock for now — its setTimeout/Date.now remain compatible
-	// with vi fake timers in tests; the injectable-clock option lands with the full T026 supervisor.
-	private readonly clock: Clock = new SystemClock();
+	// Timing seam (NFR-006) — injectable via options; defaults to SystemClock (its setTimeout/Date.now
+	// stay vi-fake-timer compatible). ALL timing (heartbeat, reconnect backoff+jitter) routes through it.
+	private readonly clock: Clock;
 
 	// Per-connection epoch: an AbortController scoping the heartbeat loop; aborted on close/reconnect
-	// (the TaskGroup analog). The reconnect backoff still uses a setTimeout for now.
+	// (the TaskGroup analog).
 	private epoch: AbortController | null = null;
 	private heartbeat: HeartbeatMonitor | null = null;
 
-	// Timers
-	private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+	// Client-lifetime signal for the reconnect-backoff sleep; aborted by disconnect() to cancel a
+	// pending reconnect, re-created on a fresh connect() after a disconnect.
+	private shutdown = new AbortController();
 
 	// Network listeners
 	private boundHandleOnline: (() => void) | null = null;
@@ -103,6 +106,7 @@ export class SukkoClient extends TypedEventEmitter<SukkoClientEvents> {
 		super();
 
 		this.transport = options.transport;
+		this.clock = options.clock ?? new SystemClock();
 		this.options = {
 			token: options.token ?? "",
 			reconnect: options.reconnect ?? true,
@@ -228,7 +232,11 @@ export class SukkoClient extends TypedEventEmitter<SukkoClientEvents> {
 		if (this.transport.state === "opening" || this.transport.state === "open") return;
 
 		this.setState("connecting");
-		this.clearTimers();
+		// Cancel any pending reconnect backoff and open a fresh cancellation scope for this connection —
+		// any "start a connection" path (connect / forceReconnect / a reconnect firing) supersedes an
+		// in-flight backoff, so no orphaned sleeper survives (§XI deterministic teardown).
+		this.shutdown.abort();
+		this.shutdown = new AbortController();
 		this.teardownEpoch(); // abort any stale epoch before opening a fresh one
 		this.epoch = new AbortController();
 		this.transport.setToken(this.options.token);
@@ -237,7 +245,7 @@ export class SukkoClient extends TypedEventEmitter<SukkoClientEvents> {
 
 	/** Disconnect intentionally (no automatic reconnection). */
 	disconnect(): void {
-		this.clearTimers();
+		this.shutdown.abort(); // cancel any pending reconnect backoff
 		this.teardownEpoch();
 
 		// Remove transport close listener before closing to prevent
@@ -408,7 +416,7 @@ export class SukkoClient extends TypedEventEmitter<SukkoClientEvents> {
 			return;
 		}
 		// 1001 going-away, 1011 internal-error, 1006/abnormal, unknown → transient, reconnect with backoff.
-		this.handleReconnect();
+		void this.handleReconnect();
 	}
 
 	private handleTransportError(): void {
@@ -434,10 +442,9 @@ export class SukkoClient extends TypedEventEmitter<SukkoClientEvents> {
 	}
 
 	private forceReconnect(): void {
-		this.clearTimers();
 		this.resetReconnectAttempts();
 		this.transport.close();
-		this.connect();
+		this.connect(); // teardownEpoch + fresh epoch handled inside connect()
 	}
 
 	private handleMessage(data: string): void {
@@ -509,7 +516,7 @@ export class SukkoClient extends TypedEventEmitter<SukkoClientEvents> {
 	// Internal — Reconnection
 	// ---------------------------------------------------------------------------
 
-	private handleReconnect(): void {
+	private async handleReconnect(): Promise<void> {
 		if (!this.options.reconnect) {
 			this.setState("disconnected");
 			return;
@@ -532,10 +539,16 @@ export class SukkoClient extends TypedEventEmitter<SukkoClientEvents> {
 			this.options.reconnectDelayMax,
 			this.options.reconnectDelayBase * 2 ** (this.reconnectAttempt - 1),
 		);
-		const delay = Math.random() * ceiling;
+		const delay = this.clock.rng() * ceiling;
 
 		this.emit("reconnecting", this.reconnectAttempt);
-		this.reconnectTimer = setTimeout(() => this.connect(), delay);
+		try {
+			await this.clock.sleep(delay, this.shutdown.signal);
+		} catch {
+			return; // the backoff sleep was aborted (disconnect / a superseding connect) — stop here
+		}
+		// Outside the try so a synchronous connect()/transport.open() throw surfaces, not swallowed (§III).
+		this.connect();
 	}
 
 	// ---------------------------------------------------------------------------
@@ -567,7 +580,7 @@ export class SukkoClient extends TypedEventEmitter<SukkoClientEvents> {
 		this.teardownEpoch();
 		this.transport.close(CLOSE_CODES.HEARTBEAT_TIMEOUT, "Heartbeat timeout");
 		this.emit("close", CLOSE_CODES.HEARTBEAT_TIMEOUT, "Heartbeat timeout");
-		this.handleReconnect();
+		void this.handleReconnect();
 	}
 
 	/** Tear down the current connection epoch — aborts the heartbeat loop (the TaskGroup analog). */
@@ -575,13 +588,6 @@ export class SukkoClient extends TypedEventEmitter<SukkoClientEvents> {
 		this.epoch?.abort();
 		this.epoch = null;
 		this.heartbeat = null;
-	}
-
-	private clearTimers(): void {
-		if (this.reconnectTimer) {
-			clearTimeout(this.reconnectTimer);
-			this.reconnectTimer = null;
-		}
 	}
 
 	// ---------------------------------------------------------------------------

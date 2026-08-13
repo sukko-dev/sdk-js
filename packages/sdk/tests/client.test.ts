@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { SystemClock } from "../src/_clock";
 import { SukkoClient } from "../src/client";
 import { CLOSE_CODES } from "../src/constants";
 import { TypedEventEmitter } from "../src/emitter";
@@ -632,6 +633,76 @@ describe("SukkoClient", () => {
 			// Past the backoff — the scheduled connect() must actually RE-OPEN the socket (proving the
 			// close-before-reconnect ordering), not no-op against a not-yet-closed transport.
 			await vi.advanceTimersByTimeAsync(400); // t=700 > 650
+			expect(openSpy).toHaveBeenCalled();
+			expect(client.state).toBe("connected");
+			client.disconnect();
+		});
+
+		it("routes reconnect backoff + jitter through the injected clock (NFR-006)", async () => {
+			const clock = new SystemClock();
+			const sleepSpy = vi.spyOn(clock, "sleep");
+			const rngSpy = vi.spyOn(clock, "rng").mockReturnValue(0.5);
+			const transport = new MockTransport();
+			const client = new SukkoClient({
+				transport,
+				autoConnect: true,
+				reconnect: true,
+				clock,
+				reconnectDelayBase: 1000,
+				reconnectDelayMax: 1000,
+			});
+			await vi.advanceTimersByTimeAsync(0);
+
+			transport.simulateClose(1006, "Abnormal");
+			expect(client.state).toBe("reconnecting");
+			expect(rngSpy).toHaveBeenCalled(); // jitter via the injected clock's RNG
+			// backoff sleep via the injected clock: delay = 0.5 * min(1000, 1000) = 500
+			expect(sleepSpy).toHaveBeenCalledWith(500, expect.anything());
+			client.disconnect();
+		});
+
+		it("disconnect() cancels a pending reconnect backoff", async () => {
+			vi.spyOn(Math, "random").mockReturnValue(0.5);
+			const transport = new MockTransport();
+			const openSpy = vi.spyOn(transport, "open");
+			const client = new SukkoClient({
+				transport,
+				autoConnect: true,
+				reconnect: true,
+				reconnectDelayBase: 1000,
+				reconnectDelayMax: 1000,
+			});
+			await vi.advanceTimersByTimeAsync(0);
+			openSpy.mockClear();
+
+			transport.simulateClose(1006, "Abnormal"); // → reconnecting, backoff (500) pending
+			expect(client.state).toBe("reconnecting");
+			client.disconnect(); // aborts shutdown → cancels the pending reconnect
+			await vi.advanceTimersByTimeAsync(2000); // well past the 500 backoff
+			expect(openSpy).not.toHaveBeenCalled(); // the reconnect never fired
+			expect(client.state).toBe("disconnected");
+		});
+
+		it("re-enables reconnect after a disconnect→connect cycle (shutdown controller reuse)", async () => {
+			vi.spyOn(Math, "random").mockReturnValue(0.5);
+			const transport = new MockTransport();
+			const client = new SukkoClient({
+				transport,
+				autoConnect: true,
+				reconnect: true,
+				reconnectDelayBase: 1000,
+				reconnectDelayMax: 1000,
+			});
+			await vi.advanceTimersByTimeAsync(0);
+			client.disconnect(); // aborts shutdown
+			client.connect(); // must re-open a fresh (non-aborted) shutdown scope
+			await vi.advanceTimersByTimeAsync(0);
+			expect(client.state).toBe("connected");
+
+			const openSpy = vi.spyOn(transport, "open");
+			transport.simulateClose(1006, "Abnormal");
+			expect(client.state).toBe("reconnecting"); // reconnect still works — shutdown wasn't stuck aborted
+			await vi.advanceTimersByTimeAsync(600); // past backoff 500
 			expect(openSpy).toHaveBeenCalled();
 			expect(client.state).toBe("connected");
 			client.disconnect();
