@@ -192,6 +192,8 @@ export type SukkoClientEvents = {
 	reconnecting: (attempt: number) => void;
 	/** A recovery (reconnect-replay / live replay) was truncated — advisory, not terminal (§III). */
 	recoveryInterrupted: (err: RecoveryInterruptedError) => void;
+	/** A `history()` request was rejected by the server (edition-gated, disabled, or invalid). */
+	historyError: (msg: HistoryError) => void;
 };
 
 // ---------------------------------------------------------------------------
@@ -200,6 +202,7 @@ export type SukkoClientEvents = {
 
 import type { Clock } from "./_clock";
 import type { RecoveryInterruptedError } from "./errors";
+import type { HistoryError } from "./messages";
 import type { Transport } from "./transport";
 
 export interface SukkoClientOptions {

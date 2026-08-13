@@ -2,11 +2,20 @@ import { type Clock, SystemClock } from "./_clock";
 import { DeliveryQueue } from "./backpressure";
 import { CLIENT_ID_KEY, CLOSE_CODES, SUKKO_DEFAULTS } from "./constants";
 import { TypedEventEmitter } from "./emitter";
-import { REPLAY_ERROR_CODES, RecoveryInterruptedError } from "./errors";
+import {
+	ConfigurationError,
+	NotConnectedError,
+	REPLAY_ERROR_CODES,
+	RecoveryInterruptedError,
+	TransportError,
+} from "./errors";
 import { HeartbeatMonitor } from "./heartbeat";
 import type {
 	DeliveryItem,
 	Gap,
+	HistoryComplete,
+	HistoryError,
+	HistoryMessage,
 	Message,
 	ReplayComplete,
 	ReplayMessage,
@@ -319,6 +328,45 @@ export class SukkoClient extends TypedEventEmitter<SukkoClientEvents> {
 	}
 
 	// ---------------------------------------------------------------------------
+	// Public API — History
+	// ---------------------------------------------------------------------------
+
+	/**
+	 * Request up to `limit` historical messages for a subscribed `channel` (default `historyLimit`).
+	 * They arrive on `messages()` as `Message`s with `history: true`, terminated by a `history_complete`
+	 * (Pro + `WS_HISTORY_ENABLED` gated — otherwise a `historyError` event fires). Unlike the fire-and-
+	 * forget `publish`/`subscribe`, this validates and THROWS: `NotConnectedError` when disconnected,
+	 * `TransportError` on a transport with no client→server channel (history is WS-only), and
+	 * `ConfigurationError` when `limit` exceeds `historyLimit`. Validate first, then arm the detection
+	 * deadline, then send — a thrown error must never leave a phantom deadline armed.
+	 */
+	history(channel: string, limit?: number): void {
+		if (this.transport.state !== "open") {
+			throw new NotConnectedError("history() requires an open connection");
+		}
+		if (!this.transport.capabilities.canSend) {
+			throw new TransportError(
+				"history() requires a WebSocket transport — this transport cannot send",
+			);
+		}
+		const effective = limit ?? SUKKO_DEFAULTS.historyLimit;
+		// The contract declares `limit` an integer in [1, WS_HISTORY_MAX_LIMIT]; validate BOTH bounds
+		// client-side (§II — never assume upstream validation) so a bad value fails fast instead of a
+		// wasted round trip bounced back as `history_invalid_limit`.
+		if (!Number.isInteger(effective) || effective < 1) {
+			throw new ConfigurationError(`history limit must be a positive integer, got ${effective}`);
+		}
+		if (effective > SUKKO_DEFAULTS.historyLimit) {
+			throw new ConfigurationError(
+				`history limit ${effective} exceeds the client historyLimit ${SUKKO_DEFAULTS.historyLimit}`,
+			);
+		}
+		this.recovery.noteHistoryRequest(channel);
+		this.wakeRecovery();
+		this.send({ type: "history", data: { channel, limit: effective } });
+	}
+
+	// ---------------------------------------------------------------------------
 	// Public API — Token
 	// ---------------------------------------------------------------------------
 
@@ -453,7 +501,7 @@ export class SukkoClient extends TypedEventEmitter<SukkoClientEvents> {
 	// Internal — Message handling
 	// ---------------------------------------------------------------------------
 
-	private send(message: ClientMessage | ReplayRequestMessage): void {
+	private send(message: ClientMessage | ReplayRequestMessage | HistoryMessage): void {
 		if (this.transport.state === "open") {
 			this.transport.send(JSON.stringify(message));
 		}
@@ -484,10 +532,19 @@ export class SukkoClient extends TypedEventEmitter<SukkoClientEvents> {
 
 			switch (raw.type) {
 				case "message": {
-					const msg = raw as unknown as DataMessage;
-					this.recovery.notePos(msg.channel, msg.pos); // anchor for the next reconnect-replay
-					this.emit("message", msg); // pre-queue tap (multicast, non-back-pressured)
-					this.enqueue(raw as unknown as Message); // authoritative delivery stream
+					const msg = raw as unknown as Message;
+					if (msg.history === true) {
+						// A history backfill frame — reset the history idle deadline. Do NOT notePos: history
+						// positions are OLDER than the live anchor (last-N backfill), and the engine can't
+						// compare opaque pos, so noting one would move the reconnect anchor backward and cause
+						// re-delivery. (Correction over the sukko-py reference, which notes pos for all frames.)
+						this.recovery.handleHistoryMessage(msg.channel);
+						this.wakeRecovery();
+					} else {
+						this.recovery.notePos(msg.channel, msg.pos); // anchor for the next reconnect-replay
+					}
+					this.emit("message", raw as unknown as DataMessage); // pre-queue tap (multicast, non-back-pressured)
+					this.enqueue(msg); // authoritative delivery stream
 					break;
 				}
 				case "gap": {
@@ -515,6 +572,27 @@ export class SukkoClient extends TypedEventEmitter<SukkoClientEvents> {
 					const rc = raw as unknown as ReplayComplete;
 					this.applyRecoveryActions(this.recovery.handleReplayComplete(rc.channel));
 					this.wakeRecovery();
+					break;
+				}
+				case "history_complete": {
+					// The history backfill finished — clear its detection deadline. History frames are
+					// delivered inline on messages() (flagged `history: true`); there is no separate terminator.
+					this.recovery.handleHistoryComplete((raw as unknown as HistoryComplete).channel);
+					this.wakeRecovery();
+					break;
+				}
+				case "history_error": {
+					// The history request was rejected. `history_in_progress` is special: it rejects a DUPLICATE
+					// request while the ORIGINAL backfill is still streaming, so its detection deadline MUST stay
+					// armed (clearing it would silently disarm the still-running request's stall watchdog). Any
+					// other code means this channel's history genuinely failed → clear the deadline so it can't
+					// later fire a spurious RecoveryInterrupted. Either way, surface the typed error.
+					const err = raw as unknown as HistoryError;
+					if (err.code !== "history_in_progress") {
+						this.recovery.handleHistoryComplete(err.channel);
+						this.wakeRecovery();
+					}
+					this.emit("historyError", err);
 					break;
 				}
 				case "subscription_ack":

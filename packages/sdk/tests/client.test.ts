@@ -3,7 +3,12 @@ import { SystemClock } from "../src/_clock";
 import { SukkoClient } from "../src/client";
 import { CLOSE_CODES } from "../src/constants";
 import { TypedEventEmitter } from "../src/emitter";
-import { RecoveryInterruptedError } from "../src/errors";
+import {
+	ConfigurationError,
+	NotConnectedError,
+	RecoveryInterruptedError,
+	TransportError,
+} from "../src/errors";
 import type {
 	Transport,
 	TransportCapabilities,
@@ -1245,6 +1250,226 @@ describe("SukkoClient", () => {
 			await vi.advanceTimersByTimeAsync(10001); // no replay_complete → deadline fires
 			expect(handler).toHaveBeenCalledOnce();
 			expect(handler.mock.calls[0][0].channel).toBe("tenant.BTC.trade");
+
+			client.disconnect();
+		});
+	});
+
+	describe("history", () => {
+		it("sends a history frame with the given limit", async () => {
+			const { client, transport } = createClient();
+			client.connect();
+			await vi.advanceTimersByTimeAsync(0);
+			transport.sent.length = 0;
+
+			client.history("tenant.BTC.trade", 25);
+
+			const frame = transport.sent.find((s) => JSON.parse(s).type === "history");
+			expect(frame).toBeDefined();
+			expect(JSON.parse(frame!).data).toEqual({ channel: "tenant.BTC.trade", limit: 25 });
+
+			client.disconnect();
+		});
+
+		it("defaults the limit to historyLimit when omitted", async () => {
+			const { client, transport } = createClient();
+			client.connect();
+			await vi.advanceTimersByTimeAsync(0);
+			transport.sent.length = 0;
+
+			client.history("tenant.BTC.trade");
+
+			const frame = transport.sent.find((s) => JSON.parse(s).type === "history");
+			expect(JSON.parse(frame!).data.limit).toBe(100); // SUKKO_DEFAULTS.historyLimit
+
+			client.disconnect();
+		});
+
+		it("throws ConfigurationError when limit exceeds historyLimit", async () => {
+			const { client } = createClient();
+			client.connect();
+			await vi.advanceTimersByTimeAsync(0);
+
+			expect(() => client.history("tenant.BTC.trade", 101)).toThrow(ConfigurationError);
+
+			client.disconnect();
+		});
+
+		it("throws ConfigurationError for a non-positive or non-integer limit", async () => {
+			const { client } = createClient();
+			client.connect();
+			await vi.advanceTimersByTimeAsync(0);
+
+			// The contract declares limit an integer >= 1 — validate the lower bound client-side too (§II).
+			expect(() => client.history("tenant.BTC.trade", 0)).toThrow(ConfigurationError);
+			expect(() => client.history("tenant.BTC.trade", -5)).toThrow(ConfigurationError);
+			expect(() => client.history("tenant.BTC.trade", 2.5)).toThrow(ConfigurationError);
+
+			client.disconnect();
+		});
+
+		it("throws NotConnectedError when not connected", () => {
+			const { client } = createClient();
+			expect(() => client.history("tenant.BTC.trade")).toThrow(NotConnectedError);
+		});
+
+		it("throws TransportError on a transport that cannot send (WS-only)", async () => {
+			class NoSendTransport extends MockTransport {
+				override get capabilities(): TransportCapabilities {
+					return { canSend: false, canSubscribe: true, canPublish: false, canPauseReceive: false };
+				}
+			}
+			const transport = new NoSendTransport();
+			const client = new SukkoClient({ transport, autoConnect: false, reconnect: false });
+			client.connect();
+			await vi.advanceTimersByTimeAsync(0);
+
+			expect(() => client.history("tenant.BTC.trade")).toThrow(TransportError);
+
+			client.disconnect();
+		});
+
+		it("does NOT anchor recovery pos from history frames (no backward anchor)", async () => {
+			const { client, transport } = createClient();
+			client.connect();
+			await vi.advanceTimersByTimeAsync(0);
+
+			// A live message advances the anchor to 5-100.
+			transport.simulateMessage({
+				type: "message",
+				ts: Date.now(),
+				channel: "tenant.BTC.trade",
+				data: {},
+				pos: "5-100",
+			});
+			// An OLDER history backfill frame arrives with pos 5-50 — it must NOT move the anchor back.
+			transport.simulateMessage({
+				type: "message",
+				ts: Date.now(),
+				channel: "tenant.BTC.trade",
+				data: {},
+				pos: "5-50",
+				history: true,
+			});
+
+			transport.sent.length = 0;
+			client.reconnectWithReplay();
+			const reconnect = transport.sent.find((s) => JSON.parse(s).type === "reconnect");
+			expect(JSON.parse(reconnect!).data.last_pos["tenant.BTC.trade"]).toBe("5-100");
+
+			client.disconnect();
+		});
+
+		it("resets the detection deadline on each history frame, and history_complete clears it", async () => {
+			const { client, transport } = createClient();
+			client.connect();
+			await vi.advanceTimersByTimeAsync(0);
+
+			const handler = vi.fn();
+			client.on("recoveryInterrupted", handler);
+			client.history("tenant.BTC.trade", 10); // arms the detection deadline at +10s
+
+			// History frames every 6s keep resetting the 10s idle deadline past the original deadline.
+			await vi.advanceTimersByTimeAsync(6000);
+			transport.simulateMessage({
+				type: "message",
+				ts: Date.now(),
+				channel: "tenant.BTC.trade",
+				data: {},
+				history: true,
+			});
+			await vi.advanceTimersByTimeAsync(6000);
+			transport.simulateMessage({
+				type: "message",
+				ts: Date.now(),
+				channel: "tenant.BTC.trade",
+				data: {},
+				history: true,
+			});
+			await vi.advanceTimersByTimeAsync(6000);
+			expect(handler).not.toHaveBeenCalled();
+
+			// history_complete clears the deadline — no interrupt ever fires.
+			transport.simulateMessage({
+				type: "history_complete",
+				channel: "tenant.BTC.trade",
+				count: 2,
+				source: "kafka",
+			});
+			await vi.advanceTimersByTimeAsync(20000);
+			expect(handler).not.toHaveBeenCalled();
+
+			client.disconnect();
+		});
+
+		it("raises recoveryInterrupted when history never completes past the deadline", async () => {
+			const { client } = createClient();
+			client.connect();
+			await vi.advanceTimersByTimeAsync(0);
+
+			const handler = vi.fn();
+			client.on("recoveryInterrupted", handler);
+			client.history("tenant.BTC.trade", 10); // deadline armed at +10s, no frames follow
+
+			await vi.advanceTimersByTimeAsync(10001);
+			expect(handler).toHaveBeenCalledOnce();
+			expect(handler.mock.calls[0][0].channel).toBe("tenant.BTC.trade");
+
+			client.disconnect();
+		});
+
+		it("keeps the deadline armed on history_in_progress (duplicate rejected, original still running)", async () => {
+			const { client, transport } = createClient();
+			client.connect();
+			await vi.advanceTimersByTimeAsync(0);
+
+			const historyError = vi.fn();
+			const recovery = vi.fn();
+			client.on("historyError", historyError);
+			client.on("recoveryInterrupted", recovery);
+			client.history("tenant.BTC.trade", 10); // original request → deadline armed at +10s
+
+			// A duplicate request is rejected while the original backfill is still in flight. Its deadline
+			// must NOT be cleared — otherwise the original's stall watchdog is silently lost.
+			transport.simulateMessage({
+				type: "history_error",
+				code: "history_in_progress",
+				channel: "tenant.BTC.trade",
+				message: "history already running",
+			});
+			expect(historyError).toHaveBeenCalledOnce();
+
+			// The original watchdog survives: a subsequent stall still raises RecoveryInterrupted.
+			await vi.advanceTimersByTimeAsync(10001);
+			expect(recovery).toHaveBeenCalledOnce();
+			expect(recovery.mock.calls[0][0].channel).toBe("tenant.BTC.trade");
+
+			client.disconnect();
+		});
+
+		it("emits historyError and clears the deadline (single signal, no later interrupt)", async () => {
+			const { client, transport } = createClient();
+			client.connect();
+			await vi.advanceTimersByTimeAsync(0);
+
+			const historyError = vi.fn();
+			const recovery = vi.fn();
+			client.on("historyError", historyError);
+			client.on("recoveryInterrupted", recovery);
+			client.history("tenant.BTC.trade", 10); // arms the deadline
+
+			transport.simulateMessage({
+				type: "history_error",
+				code: "history_disabled",
+				channel: "tenant.BTC.trade",
+				message: "history is not enabled",
+			});
+			expect(historyError).toHaveBeenCalledOnce();
+			expect(historyError.mock.calls[0][0].code).toBe("history_disabled");
+
+			// The armed deadline was cleared — no spurious RecoveryInterrupted 10s later.
+			await vi.advanceTimersByTimeAsync(20000);
+			expect(recovery).not.toHaveBeenCalled();
 
 			client.disconnect();
 		});

@@ -16,6 +16,9 @@ export class SukkoError extends Error {
 /** A method that requires an open connection was called while disconnected. */
 export class NotConnectedError extends SukkoError {}
 
+/** A method was called on a transport that lacks the required capability (e.g. `history()` over SSE). */
+export class TransportError extends SukkoError {}
+
 /** Invalid client configuration detected at construction — fail fast, never default silently (§II). */
 export class ConfigurationError extends SukkoError {}
 

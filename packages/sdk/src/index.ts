@@ -57,11 +57,19 @@ export type {
 	Gap,
 	PossibleGap,
 	Overflow,
+	HistoryError,
 } from "./messages";
 
-// Errors — RecoveryInterruptedError backs the `recoveryInterrupted` event; the full hierarchy is
-// exported by the T041 public-API pass.
-export { RecoveryInterruptedError } from "./errors";
+// Errors — the SukkoError base (catch-all) plus every error a public method throws or an event carries:
+// `history()` throws NotConnectedError / TransportError / ConfigurationError, `recoveryInterrupted`
+// carries RecoveryInterruptedError. The remaining hierarchy is exported by the T041 public-API pass.
+export {
+	ConfigurationError,
+	NotConnectedError,
+	RecoveryInterruptedError,
+	SukkoError,
+	TransportError,
+} from "./errors";
 
 // Constants
 export { CLOSE_CODES, CLIENT_ID_KEY, SUKKO_DEFAULTS } from "./constants";
