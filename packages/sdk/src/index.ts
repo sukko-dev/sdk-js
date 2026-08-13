@@ -59,6 +59,10 @@ export type {
 	Overflow,
 } from "./messages";
 
+// Errors — RecoveryInterruptedError backs the `recoveryInterrupted` event; the full hierarchy is
+// exported by the T041 public-API pass.
+export { RecoveryInterruptedError } from "./errors";
+
 // Constants
 export { CLOSE_CODES, CLIENT_ID_KEY, SUKKO_DEFAULTS } from "./constants";
 

@@ -251,6 +251,38 @@ describe("RecoveryEngine — history deadline", () => {
 	});
 });
 
+describe("RecoveryEngine — forget()", () => {
+	it("drops a channel's stored pos so it no longer rides along in the next reconnect-replay", () => {
+		const { engine } = makeEngine();
+		engine.markConnected();
+		engine.notePos("acme.x", "3-42");
+		engine.notePos("acme.y", "3-99");
+		engine.forget("acme.x");
+		expect(engine.buildReconnect()).toEqual({
+			action: "send_reconnect",
+			client_id: "c1",
+			last_pos: { "acme.y": "3-99" },
+		});
+	});
+
+	it("clears a channel mid-replay so a later due() raises no spurious RecoveryInterrupted", () => {
+		const { engine, clock } = makeEngine();
+		engine.handleGap("acme.x", "2-100"); // replaying, deadline at t=DEADLINE
+		engine.forget("acme.x");
+		clock.advanceSync(DEADLINE + 1); // past the (now-forgotten) deadline
+		expect(engine.due()).toEqual([]);
+		expect(engine.nextDeadline()).toBeNull();
+	});
+
+	it("clears an in-flight history deadline for the channel", () => {
+		const { engine, clock } = makeEngine();
+		engine.noteHistoryRequest("acme.x");
+		engine.forget("acme.x");
+		clock.advanceSync(DEADLINE + 1);
+		expect(engine.due()).toEqual([]);
+	});
+});
+
 describe("RecoveryEngine — nextDeadline()", () => {
 	it("returns null when nothing is pending", () => {
 		const { engine } = makeEngine();

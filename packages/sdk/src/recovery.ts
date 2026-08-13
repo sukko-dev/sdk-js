@@ -114,6 +114,18 @@ export class RecoveryEngine {
 		this.connectedOnce = true;
 	}
 
+	/**
+	 * Drop every trace of `channel` — its stored `pos`, its recovery FSM entry, and any in-flight
+	 * history deadline. Called on `unsubscribe`: without it the channel's `pos` would still ride along
+	 * in the next reconnect-replay, and a later disconnect/deadline could raise a spurious
+	 * `RecoveryInterrupted` for a channel the caller no longer cares about.
+	 */
+	forget(channel: string): void {
+		this.pos.delete(channel);
+		this.channels.delete(channel);
+		this.historyDeadline.delete(channel);
+	}
+
 	private channel(channel: string): ChannelState {
 		let rec = this.channels.get(channel);
 		if (rec === undefined) {

@@ -3,6 +3,7 @@ import { SystemClock } from "../src/_clock";
 import { SukkoClient } from "../src/client";
 import { CLOSE_CODES } from "../src/constants";
 import { TypedEventEmitter } from "../src/emitter";
+import { RecoveryInterruptedError } from "../src/errors";
 import type {
 	Transport,
 	TransportCapabilities,
@@ -813,12 +814,12 @@ describe("SukkoClient", () => {
 			expect(transport.sent.length).toBe(0);
 		});
 
-		it("does not send reconnect when no pos values have been tracked", async () => {
+		it("probes with an empty last_pos once connected, even with no pos tracked (Direct detection)", async () => {
 			const { client, transport } = createClient();
 			client.connect();
 			await vi.advanceTimersByTimeAsync(0);
 
-			// Simulate a message WITHOUT pos (e.g. Direct backend)
+			// Simulate a message WITHOUT pos (e.g. Direct backend) — nothing to anchor a resume.
 			transport.simulateMessage({
 				type: "message",
 				seq: 1,
@@ -829,8 +830,11 @@ describe("SukkoClient", () => {
 
 			client.reconnectWithReplay();
 
+			// The client has connected once, so it PROBES with an empty last_pos to elicit `not_available`
+			// on a Direct backend (FR-007) rather than silently dropping the reconnect.
 			const reconnectMsg = transport.sent.find((s) => JSON.parse(s).type === "reconnect");
-			expect(reconnectMsg).toBeUndefined();
+			expect(reconnectMsg).toBeDefined();
+			expect(JSON.parse(reconnectMsg!).data.last_pos).toEqual({});
 
 			client.disconnect();
 		});
@@ -903,6 +907,344 @@ describe("SukkoClient", () => {
 			expect(parsed.data.last_pos["tenant.BTC.trade"]).toBeUndefined();
 			// Still-subscribed channel must be present
 			expect(parsed.data.last_pos["tenant.ETH.trade"]).toBe("3-99");
+
+			client.disconnect();
+		});
+	});
+
+	describe("recovery routing", () => {
+		it("sends no reconnect frame on the first open, but probes on the reconnect (ordering)", async () => {
+			vi.spyOn(Math, "random").mockReturnValue(0.5); // deterministic Full-Jitter delay
+			const transport = new MockTransport();
+			const client = new SukkoClient({
+				transport,
+				autoConnect: true,
+				reconnect: true,
+				reconnectDelayBase: 1000,
+				reconnectDelayMax: 1000,
+			});
+			await vi.advanceTimersByTimeAsync(0);
+
+			// First open: buildReconnect() is null before markConnected() → no reconnect frame.
+			expect(transport.sent.find((s) => JSON.parse(s).type === "reconnect")).toBeUndefined();
+
+			transport.simulateClose(1006, "Abnormal"); // → reconnecting, backoff 500 pending
+			await vi.advanceTimersByTimeAsync(600); // past the backoff → the socket reopens
+			expect(client.state).toBe("connected");
+
+			// Second open: a Direct-probe (empty last_pos, no pos yet) IS sent.
+			const reconnect = transport.sent.find((s) => JSON.parse(s).type === "reconnect");
+			expect(reconnect).toBeDefined();
+			expect(JSON.parse(reconnect!).data.last_pos).toEqual({});
+
+			client.disconnect();
+		});
+
+		it("routes a live gap to an immediate replay and surfaces the gap on messages()", async () => {
+			const { client, transport } = createClient();
+			client.connect();
+			await vi.advanceTimersByTimeAsync(0);
+			transport.sent.length = 0;
+
+			const iterator = client.messages();
+			const pending = iterator.next();
+			transport.simulateMessage({
+				type: "gap",
+				channel: "tenant.BTC.trade",
+				last_pos: "2-100",
+				ts: Date.now(),
+			});
+
+			// The floor is open on the first gap → replay is sent synchronously.
+			const replay = transport.sent.find((s) => JSON.parse(s).type === "replay");
+			expect(replay).toBeDefined();
+			expect(JSON.parse(replay!).data).toEqual({ channel: "tenant.BTC.trade", from_pos: "2-100" });
+
+			// The gap is also surfaced to the delivery stream.
+			const { value } = await pending;
+			expect(value).toMatchObject({ type: "gap", channel: "tenant.BTC.trade", last_pos: "2-100" });
+
+			client.disconnect();
+		});
+
+		it("drops a malformed gap (missing last_pos or channel) — no replay, kept off messages()", async () => {
+			const { client, transport } = createClient();
+			client.connect();
+			await vi.advanceTimersByTimeAsync(0);
+			transport.sent.length = 0;
+
+			const iterator = client.messages();
+			const pending = iterator.next();
+
+			// A gap missing its required `last_pos`, and one missing its required `channel` — both must be
+			// dropped: no `replay` sent, and neither surfaced to the delivery stream (FR-025/§II).
+			transport.simulateMessage({ type: "gap", channel: "tenant.BTC.trade", ts: Date.now() });
+			transport.simulateMessage({ type: "gap", last_pos: "2-100", ts: Date.now() });
+			expect(transport.sent.find((s) => JSON.parse(s).type === "replay")).toBeUndefined();
+
+			// The next thing to reach messages() is a well-formed live message, proving neither bad gap was
+			// enqueued ahead of it.
+			transport.simulateMessage({
+				type: "message",
+				ts: Date.now(),
+				channel: "tenant.BTC.trade",
+				data: { ok: true },
+			});
+			const { value } = await pending;
+			expect(value).toMatchObject({ type: "message", data: { ok: true } });
+
+			client.disconnect();
+		});
+
+		it("tracks pos from replayed messages and enqueues them on the delivery stream", async () => {
+			const { client, transport } = createClient();
+			client.connect();
+			await vi.advanceTimersByTimeAsync(0);
+
+			const iterator = client.messages();
+			const pending = iterator.next();
+			transport.simulateMessage({
+				type: "replay_message",
+				channel: "tenant.BTC.trade",
+				ts: Date.now(),
+				data: { price: 1 },
+				pos: "5-7",
+			});
+			const { value } = await pending;
+			expect(value).toMatchObject({ type: "replay_message", channel: "tenant.BTC.trade" });
+
+			// The replayed pos anchors the next reconnect-replay.
+			transport.sent.length = 0;
+			client.reconnectWithReplay();
+			const reconnect = transport.sent.find((s) => JSON.parse(s).type === "reconnect");
+			expect(JSON.parse(reconnect!).data.last_pos["tenant.BTC.trade"]).toBe("5-7");
+
+			client.disconnect();
+		});
+
+		it("degrades to a PossibleGap per channel on reconnect_error: not_available", async () => {
+			const { client, transport } = createClient();
+			client.subscribe(["tenant.BTC.trade", "tenant.ETH.trade"]);
+			client.connect();
+			await vi.advanceTimersByTimeAsync(0);
+
+			const iterator = client.messages();
+			const first = iterator.next();
+			transport.simulateMessage({
+				type: "reconnect_error",
+				code: "not_available",
+				message: "direct backend",
+			});
+			const { value: v1 } = await first;
+			const { value: v2 } = await iterator.next();
+			expect(v1).toMatchObject({ type: "possible_gap" });
+			expect(v2).toMatchObject({ type: "possible_gap" });
+			const channels = [v1, v2].map((v) => (v as { channel: string }).channel).sort();
+			expect(channels).toEqual(["tenant.BTC.trade", "tenant.ETH.trade"]);
+
+			// Once Direct, the client stops probing.
+			transport.sent.length = 0;
+			client.reconnectWithReplay();
+			expect(transport.sent.find((s) => JSON.parse(s).type === "reconnect")).toBeUndefined();
+
+			client.disconnect();
+		});
+
+		it("emits reconnectError for a non-not_available reconnect_error code", async () => {
+			const { client, transport } = createClient();
+			client.connect();
+			await vi.advanceTimersByTimeAsync(0);
+
+			const handler = vi.fn();
+			client.on("reconnectError", handler);
+			transport.simulateMessage({
+				type: "reconnect_error",
+				code: "replay_failed",
+				message: "boom",
+			});
+
+			expect(handler).toHaveBeenCalledOnce();
+			expect(handler.mock.calls[0][0].code).toBe("replay_failed");
+
+			client.disconnect();
+		});
+
+		it("emits recoveryInterrupted when the connection drops mid-replay", async () => {
+			const { client, transport } = createClient();
+			client.connect();
+			await vi.advanceTimersByTimeAsync(0);
+
+			transport.simulateMessage({
+				type: "gap",
+				channel: "tenant.BTC.trade",
+				last_pos: "2-100",
+				ts: Date.now(),
+			}); // → replaying
+
+			const handler = vi.fn();
+			client.on("recoveryInterrupted", handler);
+			transport.simulateClose(1006, "Abnormal"); // drop mid-replay
+
+			expect(handler).toHaveBeenCalledOnce();
+			const err = handler.mock.calls[0][0];
+			expect(err).toBeInstanceOf(RecoveryInterruptedError);
+			expect(err.channel).toBe("tenant.BTC.trade");
+		});
+
+		it("routes a channel-scoped replay error frame to recoveryInterrupted", async () => {
+			const { client, transport } = createClient();
+			client.connect();
+			await vi.advanceTimersByTimeAsync(0);
+
+			transport.simulateMessage({
+				type: "gap",
+				channel: "tenant.BTC.trade",
+				last_pos: "2-100",
+				ts: Date.now(),
+			});
+
+			const handler = vi.fn();
+			client.on("recoveryInterrupted", handler);
+			transport.simulateMessage({
+				type: "error",
+				code: "replay_failed",
+				channel: "tenant.BTC.trade",
+				message: "replay failed",
+			});
+
+			expect(handler).toHaveBeenCalledOnce();
+			expect(handler.mock.calls[0][0].channel).toBe("tenant.BTC.trade");
+
+			client.disconnect();
+		});
+
+		it("routes error:not_available and error:invalid_request during replay to recoveryInterrupted", async () => {
+			// Both codes are in the contract's receiveReplayError enum, so a channel-scoped `error` frame
+			// carrying either during a live replay is a replay failure — NOT the generic `error` event, and
+			// NOT a Direct degrade (that is keyed on the `reconnect_error` message type).
+			for (const code of ["not_available", "invalid_request"] as const) {
+				const { client, transport } = createClient();
+				client.connect();
+				await vi.advanceTimersByTimeAsync(0);
+				transport.simulateMessage({
+					type: "gap",
+					channel: "tenant.BTC.trade",
+					last_pos: "2-100",
+					ts: Date.now(),
+				}); // → replaying
+
+				const recovery = vi.fn();
+				const error = vi.fn();
+				client.on("recoveryInterrupted", recovery);
+				client.on("error", error);
+				transport.simulateMessage({
+					type: "error",
+					code,
+					channel: "tenant.BTC.trade",
+					message: `replay ${code}`,
+				});
+
+				expect(recovery).toHaveBeenCalledOnce();
+				expect(recovery.mock.calls[0][0].channel).toBe("tenant.BTC.trade");
+				expect(error).not.toHaveBeenCalled(); // single signal, not a stray error + a later deadline
+				client.disconnect();
+			}
+		});
+
+		it("resets the detection deadline on each replay_message (per-frame idle timer, fix #3)", async () => {
+			const { client, transport } = createClient();
+			client.connect();
+			await vi.advanceTimersByTimeAsync(0);
+
+			const handler = vi.fn();
+			client.on("recoveryInterrupted", handler);
+			transport.simulateMessage({
+				type: "gap",
+				channel: "tenant.BTC.trade",
+				last_pos: "2-100",
+				ts: Date.now(),
+			}); // → replaying, deadline armed at +10s
+
+			// Stream replay frames every 6s: each resets the 10s idle deadline, so it never fires even though
+			// the elapsed time (18s) is well past the ORIGINAL absolute deadline.
+			await vi.advanceTimersByTimeAsync(6000);
+			transport.simulateMessage({
+				type: "replay_message",
+				channel: "tenant.BTC.trade",
+				ts: Date.now(),
+				data: {},
+			});
+			await vi.advanceTimersByTimeAsync(6000);
+			transport.simulateMessage({
+				type: "replay_message",
+				channel: "tenant.BTC.trade",
+				ts: Date.now(),
+				data: {},
+			});
+			await vi.advanceTimersByTimeAsync(6000);
+			expect(handler).not.toHaveBeenCalled();
+
+			// Frames stop → the deadline finally elapses a full window later.
+			await vi.advanceTimersByTimeAsync(10000);
+			expect(handler).toHaveBeenCalledOnce();
+
+			client.disconnect();
+		});
+
+		it("fires a floor-delayed replay through the recovery timer", async () => {
+			const { client, transport } = createClient();
+			client.connect();
+			await vi.advanceTimersByTimeAsync(0);
+
+			// First gap → immediate replay, then complete → the channel goes idle with the floor closed.
+			transport.simulateMessage({
+				type: "gap",
+				channel: "tenant.BTC.trade",
+				last_pos: "2-100",
+				ts: Date.now(),
+			});
+			transport.simulateMessage({
+				type: "replay_complete",
+				channel: "tenant.BTC.trade",
+				messages_replayed: 1,
+			});
+			transport.sent.length = 0;
+
+			// Second gap within the floor window → held (not sent immediately).
+			transport.simulateMessage({
+				type: "gap",
+				channel: "tenant.BTC.trade",
+				last_pos: "2-150",
+				ts: Date.now(),
+			});
+			expect(transport.sent.find((s) => JSON.parse(s).type === "replay")).toBeUndefined();
+
+			// Advance past the replay floor (10s) → the timer fires the held replay.
+			await vi.advanceTimersByTimeAsync(10000);
+			const replay = transport.sent.find((s) => JSON.parse(s).type === "replay");
+			expect(replay).toBeDefined();
+			expect(JSON.parse(replay!).data.from_pos).toBe("2-150");
+
+			client.disconnect();
+		});
+
+		it("raises recoveryInterrupted when replay_complete never arrives before the deadline", async () => {
+			const { client, transport } = createClient();
+			client.connect();
+			await vi.advanceTimersByTimeAsync(0);
+
+			const handler = vi.fn();
+			client.on("recoveryInterrupted", handler);
+			transport.simulateMessage({
+				type: "gap",
+				channel: "tenant.BTC.trade",
+				last_pos: "2-100",
+				ts: Date.now(),
+			}); // → replaying, detection deadline armed at +10s
+
+			await vi.advanceTimersByTimeAsync(10001); // no replay_complete → deadline fires
+			expect(handler).toHaveBeenCalledOnce();
+			expect(handler.mock.calls[0][0].channel).toBe("tenant.BTC.trade");
 
 			client.disconnect();
 		});

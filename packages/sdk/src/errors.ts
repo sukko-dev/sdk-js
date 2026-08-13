@@ -24,7 +24,14 @@ export class ConfigurationError extends SukkoError {}
  * elapsed with no frame, the connection dropped mid-recovery, or a replay error code arrived.
  * Advisory, not terminal — a later reconnect-replay may still recover the same gap.
  */
-export class RecoveryInterruptedError extends SukkoError {}
+export class RecoveryInterruptedError extends SukkoError {
+	/** The channel whose recovery was truncated, when the interruption is channel-scoped. */
+	readonly channel?: string;
+	constructor(message: string, channel?: string) {
+		super(message);
+		this.channel = channel;
+	}
+}
 
 /** The server closed the connection, or a local timeout closed it. Carries the close code + direction. */
 export class ConnectionClosedError extends SukkoError {
@@ -61,16 +68,21 @@ export class RateLimitedError extends SukkoError {
 }
 
 /**
- * WS `error`/`replay`-frame codes that mean an in-flight recovery failed (→ `RecoveryInterruptedError`),
- * distinct from `reconnect_error: not_available` (→ Direct-degrade `PossibleGap`). The same
- * `not_available` string means different things by carrying message type — see recovery.ts.
+ * Channel-scoped `error`-frame codes that mean an in-flight replay was rejected or failed
+ * (→ `RecoveryInterruptedError`). Mirrors the AsyncAPI `receiveReplayError` enum exactly (§I): every
+ * code the contract lists as a `sendReplay` rejection. Distinct from `reconnect_error: not_available`
+ * (→ Direct-degrade `PossibleGap`): the same `not_available` string means a replay failure on an
+ * `error` frame but the Direct capability signal on a `reconnect_error` frame — disambiguated by the
+ * carrying message type, never by the string alone (see recovery.ts / client.ts routing).
  */
 export const REPLAY_ERROR_CODES: readonly string[] = [
+	"not_subscribed",
+	"invalid_request",
 	"replay_in_progress",
 	"replay_rate_limited",
 	"offset_out_of_range",
+	"not_available",
 	"replay_failed",
-	"not_subscribed",
 ];
 
 /** Map a gateway HTTP status to a typed error (used by the REST/SSE layer). */

@@ -2,8 +2,18 @@ import { type Clock, SystemClock } from "./_clock";
 import { DeliveryQueue } from "./backpressure";
 import { CLIENT_ID_KEY, CLOSE_CODES, SUKKO_DEFAULTS } from "./constants";
 import { TypedEventEmitter } from "./emitter";
+import { REPLAY_ERROR_CODES, RecoveryInterruptedError } from "./errors";
 import { HeartbeatMonitor } from "./heartbeat";
-import type { DeliveryItem, Message } from "./messages";
+import type {
+	DeliveryItem,
+	Gap,
+	Message,
+	ReplayComplete,
+	ReplayMessage,
+	ReplayRequestMessage,
+	ErrorMessage as WireErrorMessage,
+} from "./messages";
+import { type RecoveryAction, RecoveryEngine } from "./recovery";
 import type { Transport } from "./transport";
 import type {
 	AuthAckMessage,
@@ -36,10 +46,10 @@ type ResolvedOptions = Required<
  * Sukko real-time client.
  *
  * Framework-agnostic, transport-agnostic client: subscribe, unsubscribe, publish, heartbeat,
- * reconnection (re-subscribes on reconnect), a back-pressured `messages()` delivery stream, and
- * manual token refresh. NOTE: automatic reconnect currently re-subscribes only — gap replay is a
- * manual `reconnectWithReplay()` call, not yet wired into auto-reconnect (§I Known Gap; the recovery
- * engine + supervisor land in the T026 rewrite).
+ * reconnection, gap recovery, a back-pressured `messages()` delivery stream, and manual token refresh.
+ * On reconnect the client resumes from the last-seen opaque `pos` (reconnect-replay) or, on the Direct
+ * backend, degrades to resubscribe + a synthetic `PossibleGap`; live gaps drive an automatic per-channel
+ * replay. Recovery is owned by the RecoveryEngine and driven by a per-epoch clock-based timer.
  *
  * The transport layer (WebSocket, SSE, Web Push, etc.) is injected via the `transport`
  * option, keeping this client decoupled from any specific transport.
@@ -80,10 +90,16 @@ export class SukkoClient extends TypedEventEmitter<SukkoClientEvents> {
 	private queueConsumer = false;
 	private transportPaused = false;
 
-	// Replay state
-	private clientId: string;
-	private lastPos = new Map<string, string>();
+	// Recovery — the RecoveryEngine is the single owner of `client_id` and per-channel opaque `pos`,
+	// plus the reconnect-replay / live-replay / Direct-degrade FSM. The client routes wire frames into
+	// it and executes the canonical actions it returns (§XV single source of truth).
+	private readonly recovery: RecoveryEngine;
 	private lastActivityTimestamp: number = Date.now();
+
+	// Condvar for the per-epoch recovery timer: aborting `recoveryWake` wakes the timer to recompute
+	// its next deadline after the engine's state changes (a gap arrives, a replay completes). Swapped
+	// for a fresh controller on each wake so a later wake can abort again.
+	private recoveryWake = new AbortController();
 
 	// Timing seam (NFR-006) — injectable via options; defaults to SystemClock (its setTimeout/Date.now
 	// stay vi-fake-timer compatible). ALL timing (heartbeat, reconnect backoff+jitter) routes through it.
@@ -127,7 +143,8 @@ export class SukkoClient extends TypedEventEmitter<SukkoClientEvents> {
 			floor: SUKKO_DEFAULTS.historyLimit + SUKKO_DEFAULTS.maxReplayMessages,
 		});
 
-		this.clientId = this.loadOrCreateClientId();
+		const clientId = this.loadOrCreateClientId();
+		this.recovery = new RecoveryEngine({ clientId, clock: this.clock });
 		this.setupTransportListeners();
 		this.setupNetworkListeners();
 
@@ -246,6 +263,7 @@ export class SukkoClient extends TypedEventEmitter<SukkoClientEvents> {
 	/** Disconnect intentionally (no automatic reconnection). */
 	disconnect(): void {
 		this.shutdown.abort(); // cancel any pending reconnect backoff
+		this.onConnectionLost();
 		this.teardownEpoch();
 
 		// Remove transport close listener before closing to prevent
@@ -281,7 +299,7 @@ export class SukkoClient extends TypedEventEmitter<SukkoClientEvents> {
 	unsubscribe(channels: string[]): void {
 		for (const ch of channels) {
 			this._subscriptions.delete(ch);
-			this.lastPos.delete(ch);
+			this.recovery.forget(ch);
 		}
 
 		if (this.transport.state === "open") {
@@ -331,20 +349,17 @@ export class SukkoClient extends TypedEventEmitter<SukkoClientEvents> {
 	// Public API — Replay
 	// ---------------------------------------------------------------------------
 
-	/** Send a reconnect-with-replay request using last-known pos values per channel. */
+	/**
+	 * Manually re-issue the reconnect-replay on the current connection: resume from stored `pos` (Kafka),
+	 * or — once the client has connected at least once with no `pos` — probe with an empty `last_pos` to
+	 * elicit a Direct-backend `not_available` (FR-007). A no-op while disconnected or on a fresh session
+	 * with nothing to resume. Superseded by the automatic reconnect-replay in `handleTransportOpen`;
+	 * removed from the public surface by T033.
+	 */
 	reconnectWithReplay(): void {
 		if (this.transport.state !== "open") return;
-		if (this.lastPos.size === 0) return;
-
-		const lastPos: Record<string, string> = {};
-		this.lastPos.forEach((pos, channel) => {
-			lastPos[channel] = pos;
-		});
-
-		this.send({
-			type: "reconnect",
-			data: { client_id: this.clientId, last_pos: lastPos },
-		});
+		const reconnect = this.recovery.buildReconnect();
+		if (reconnect) this.applyRecoveryActions([reconnect]);
 	}
 
 	/** Reset the reconnect attempt counter. */
@@ -384,8 +399,17 @@ export class SukkoClient extends TypedEventEmitter<SukkoClientEvents> {
 		this.reconnectAttempt = 0;
 		this.lastActivityTimestamp = Date.now();
 		this.startHeartbeat();
+		this.startRecoveryTimer();
 
-		// Restore subscriptions
+		// Reconnect-with-replay (resume from stored pos on Kafka) or the Direct-probe — but only from the
+		// SECOND connection onward. `buildReconnect()` reads `connectedOnce` BEFORE `markConnected()`
+		// arms it, so the genuine first open sends no `reconnect` frame (a probe against a server with no
+		// session would falsely elicit `not_available` and wrongly degrade a Kafka client to Direct).
+		const reconnect = this.recovery.buildReconnect();
+		this.recovery.markConnected();
+		if (reconnect) this.applyRecoveryActions([reconnect]);
+
+		// Restore subscriptions (live flow resumes independently of the pos-replay above).
 		if (this._subscriptions.size > 0) {
 			this.send({
 				type: "subscribe",
@@ -400,6 +424,7 @@ export class SukkoClient extends TypedEventEmitter<SukkoClientEvents> {
 	 * here is always an operator `force_disconnect` (remote), never a local heartbeat timeout.
 	 */
 	private handleTransportClose(code: number, reason: string): void {
+		this.onConnectionLost();
 		this.teardownEpoch();
 		this.emit("close", code, reason);
 
@@ -428,7 +453,7 @@ export class SukkoClient extends TypedEventEmitter<SukkoClientEvents> {
 	// Internal — Message handling
 	// ---------------------------------------------------------------------------
 
-	private send(message: ClientMessage): void {
+	private send(message: ClientMessage | ReplayRequestMessage): void {
 		if (this.transport.state === "open") {
 			this.transport.send(JSON.stringify(message));
 		}
@@ -443,6 +468,7 @@ export class SukkoClient extends TypedEventEmitter<SukkoClientEvents> {
 
 	private forceReconnect(): void {
 		this.resetReconnectAttempts();
+		this.onConnectionLost(); // the transport closes with no echo here — flush recovery state directly
 		this.transport.close();
 		this.connect(); // teardownEpoch + fresh epoch handled inside connect()
 	}
@@ -459,11 +485,36 @@ export class SukkoClient extends TypedEventEmitter<SukkoClientEvents> {
 			switch (raw.type) {
 				case "message": {
 					const msg = raw as unknown as DataMessage;
-					if (msg.pos) {
-						this.lastPos.set(msg.channel, msg.pos);
-					}
+					this.recovery.notePos(msg.channel, msg.pos); // anchor for the next reconnect-replay
 					this.emit("message", msg); // pre-queue tap (multicast, non-back-pressured)
 					this.enqueue(raw as unknown as Message); // authoritative delivery stream
+					break;
+				}
+				case "gap": {
+					// A live gap. Surface the loss signal to the consumer FIRST, then let the engine decide
+					// whether/when to replay (immediate, floor-wait, or ignored once Direct).
+					const gap = raw as unknown as Gap;
+					// `channel` and `last_pos` are both contract-required and both drive an outbound `replay`
+					// frame — a gap missing either would anchor a replay from `undefined` and emit a malformed
+					// frame (the missing key silently dropped by JSON.stringify). Drop-and-continue (FR-025/§II).
+					if (typeof gap.channel !== "string" || typeof gap.last_pos !== "string") break;
+					this.enqueue(gap);
+					this.applyRecoveryActions(this.recovery.handleGap(gap.channel, gap.last_pos));
+					this.wakeRecovery();
+					break;
+				}
+				case "replay_message": {
+					const rm = raw as unknown as ReplayMessage;
+					this.recovery.notePos(rm.channel, rm.pos);
+					this.recovery.handleReplayMessage(rm.channel); // reset the per-frame idle deadline (fix #3)
+					this.enqueue(rm);
+					this.wakeRecovery();
+					break;
+				}
+				case "replay_complete": {
+					const rc = raw as unknown as ReplayComplete;
+					this.applyRecoveryActions(this.recovery.handleReplayComplete(rc.channel));
+					this.wakeRecovery();
 					break;
 				}
 				case "subscription_ack":
@@ -481,15 +532,37 @@ export class SukkoClient extends TypedEventEmitter<SukkoClientEvents> {
 				case "reconnect_ack":
 					this.emit("reconnectAck", raw as unknown as ReconnectAckMessage);
 					break;
-				case "reconnect_error":
-					this.emit("reconnectError", raw as unknown as ReconnectErrorMessage);
+				case "reconnect_error": {
+					// `not_available` is the Direct-backend capability signal, not a retryable error: degrade
+					// to resubscribe and surface one synthetic PossibleGap per channel. Any other code is a
+					// genuine reconnect failure → the typed event.
+					const err = raw as unknown as ReconnectErrorMessage;
+					if (err.code === "not_available") {
+						this.applyRecoveryActions(
+							this.recovery.handleNotAvailable(Array.from(this._subscriptions)),
+						);
+						this.wakeRecovery();
+					} else {
+						this.emit("reconnectError", err);
+					}
 					break;
+				}
 				case "pong":
 					this.emit("pong", raw as unknown as PongMessage);
 					break;
-				case "error":
-					this.emit("error", raw as unknown as ErrorMessage);
+				case "error": {
+					// A channel-scoped replay/recovery error code means an in-flight replay failed: reset that
+					// channel's FSM and raise a single RecoveryInterrupted (never a stray error now plus a
+					// deadline-fired one later). Everything else is a plain protocol error → the typed event.
+					const err = raw as unknown as WireErrorMessage;
+					if (err.channel !== undefined && REPLAY_ERROR_CODES.includes(err.code)) {
+						this.applyRecoveryActions(this.recovery.handleRecoveryFailure(err.channel, err.code));
+						this.wakeRecovery();
+					} else {
+						this.emit("error", raw as unknown as ErrorMessage);
+					}
 					break;
+				}
 				case "subscribe_error":
 					this.emit("subscribeError", raw as unknown as SubscribeErrorMessage);
 					break;
@@ -552,6 +625,97 @@ export class SukkoClient extends TypedEventEmitter<SukkoClientEvents> {
 	}
 
 	// ---------------------------------------------------------------------------
+	// Internal — Recovery
+	// ---------------------------------------------------------------------------
+
+	/** Execute the canonical actions the RecoveryEngine returns: send frames, enqueue signals, emit errors. */
+	private applyRecoveryActions(actions: RecoveryAction[]): void {
+		for (const action of actions) {
+			switch (action.action) {
+				case "send_replay":
+					this.send({
+						type: "replay",
+						data: { channel: action.channel, from_pos: action.from_pos },
+					});
+					break;
+				case "send_reconnect":
+					this.send({
+						type: "reconnect",
+						data: { client_id: action.client_id, last_pos: action.last_pos },
+					});
+					break;
+				case "emit_possible_gap":
+					this.enqueue({ type: "possible_gap", channel: action.channel });
+					break;
+				case "raise_recovery_interrupted":
+					this.emit(
+						"recoveryInterrupted",
+						new RecoveryInterruptedError(action.reason, action.channel),
+					);
+					break;
+			}
+		}
+	}
+
+	/**
+	 * A connection dropped. Any channel mid-recovery is a truncated recovery → RecoveryInterrupted
+	 * (advisory; the next reconnect-replay may still recover it). `pos` and `client_id` persist for that
+	 * reconnect-replay. Called from every connection-loss path (close, heartbeat timeout, forced
+	 * reconnect, intentional disconnect).
+	 */
+	private onConnectionLost(): void {
+		this.applyRecoveryActions(this.recovery.handleDisconnect());
+	}
+
+	/** Wake the recovery timer so it recomputes its next deadline after the engine's state changed. */
+	private wakeRecovery(): void {
+		this.recoveryWake.abort();
+		this.recoveryWake = new AbortController();
+	}
+
+	/** Start the per-epoch recovery timer (fires due floor-waits + deadlines until the epoch aborts). */
+	private startRecoveryTimer(): void {
+		if (!this.epoch) return;
+		// Guarded like the heartbeat loop: a transport-agnostic send throw during action dispatch must
+		// not become an unhandled rejection. Surfaces to the SDK logger once wired (parallel to _redact).
+		void this.runRecoveryTimer(this.epoch.signal).catch(() => {});
+	}
+
+	/**
+	 * Drive the engine's clock-based timers: fire floor-waits whose floor has elapsed (→ `send_replay`)
+	 * and raise RecoveryInterrupted past a detection deadline. Parks on the injected clock until the next
+	 * deadline, or on the `recoveryWake` condvar when nothing is pending / new work arrives — so it costs
+	 * nothing on an idle connection. Exits cleanly when the epoch aborts (§XI deterministic teardown).
+	 */
+	private async runRecoveryTimer(epochSignal: AbortSignal): Promise<void> {
+		for (;;) {
+			if (epochSignal.aborted) return;
+			// Capture the wake signal BEFORE reading the deadline: a wake fired after this read aborts the
+			// captured signal, and `anySignal` propagates an already-aborted source, so the wait below
+			// returns at once and recomputes — no lost wakeup (single-threaded: no wake can land between the
+			// capture and the park, so no explicit re-check is needed here).
+			const wakeSignal = this.recoveryWake.signal;
+			const deadline = this.recovery.nextDeadline();
+			const now = this.clock.now();
+			if (deadline !== null && deadline <= now) {
+				this.applyRecoveryActions(this.recovery.due());
+				continue;
+			}
+
+			const { signal, cleanup } = anySignal([epochSignal, wakeSignal]);
+			try {
+				if (deadline === null) {
+					await waitForAbort(signal); // nothing pending → park until woken or the epoch ends
+				} else {
+					await this.clock.sleep(deadline - now, signal).catch(() => {}); // wake/epoch aborts the sleep
+				}
+			} finally {
+				cleanup();
+			}
+		}
+	}
+
+	// ---------------------------------------------------------------------------
 	// Internal — Heartbeat
 	// ---------------------------------------------------------------------------
 
@@ -577,6 +741,7 @@ export class SukkoClient extends TypedEventEmitter<SukkoClientEvents> {
 	 * teardown + the reconnect path directly here (FR-019: local 4000 → reconnect).
 	 */
 	private handleHeartbeatTimeout(): void {
+		this.onConnectionLost();
 		this.teardownEpoch();
 		this.transport.close(CLOSE_CODES.HEARTBEAT_TIMEOUT, "Heartbeat timeout");
 		this.emit("close", CLOSE_CODES.HEARTBEAT_TIMEOUT, "Heartbeat timeout");
@@ -661,4 +826,34 @@ export class SukkoClient extends TypedEventEmitter<SukkoClientEvents> {
 		// Fallback for environments without crypto.randomUUID
 		return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 	}
+}
+
+/**
+ * Combine several `AbortSignal`s into one that aborts as soon as any source does. Returns a `cleanup`
+ * that MUST be called (in a `finally`) to detach the source listeners — the recovery timer builds one
+ * of these per wait, so leaving listeners attached would accumulate them on the long-lived epoch
+ * signal (§XI deterministic teardown). Not `AbortSignal.any()` — that isn't in the ES2020 lib types.
+ */
+function anySignal(signals: AbortSignal[]): { signal: AbortSignal; cleanup: () => void } {
+	const controller = new AbortController();
+	const onAbort = (): void => controller.abort();
+	for (const source of signals) {
+		if (source.aborted) {
+			controller.abort();
+			break;
+		}
+		source.addEventListener("abort", onAbort, { once: true });
+	}
+	const cleanup = (): void => {
+		for (const source of signals) source.removeEventListener("abort", onAbort);
+	};
+	return { signal: controller.signal, cleanup };
+}
+
+/** Resolve once `signal` aborts (immediately if already aborted). No timer — used to park indefinitely. */
+function waitForAbort(signal: AbortSignal): Promise<void> {
+	if (signal.aborted) return Promise.resolve();
+	return new Promise<void>((resolve) => {
+		signal.addEventListener("abort", () => resolve(), { once: true });
+	});
 }

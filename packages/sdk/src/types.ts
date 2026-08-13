@@ -190,6 +190,8 @@ export type SukkoClientEvents = {
 	authError: (msg: AuthErrorMessage) => void;
 	close: (code: number, reason: string) => void;
 	reconnecting: (attempt: number) => void;
+	/** A recovery (reconnect-replay / live replay) was truncated — advisory, not terminal (§III). */
+	recoveryInterrupted: (err: RecoveryInterruptedError) => void;
 };
 
 // ---------------------------------------------------------------------------
@@ -197,6 +199,7 @@ export type SukkoClientEvents = {
 // ---------------------------------------------------------------------------
 
 import type { Clock } from "./_clock";
+import type { RecoveryInterruptedError } from "./errors";
 import type { Transport } from "./transport";
 
 export interface SukkoClientOptions {

@@ -45,10 +45,23 @@ describe("error hierarchy", () => {
 		expect(new RateLimitedError("slow down").retryAfterMs).toBeUndefined();
 	});
 
-	it("REPLAY_ERROR_CODES lists the recovery-failure codes", () => {
-		expect(REPLAY_ERROR_CODES).toContain("replay_failed");
-		expect(REPLAY_ERROR_CODES).toContain("offset_out_of_range");
-		expect(REPLAY_ERROR_CODES).not.toContain("not_available"); // reconnect_error: not_available = Direct-degrade, not a replay failure
+	it("REPLAY_ERROR_CODES mirrors the AsyncAPI receiveReplayError enum exactly", () => {
+		// The contract's `receiveReplayError` lists these seven codes as `sendReplay` rejections (§I).
+		expect([...REPLAY_ERROR_CODES].sort()).toEqual(
+			[
+				"invalid_request",
+				"not_available",
+				"not_subscribed",
+				"offset_out_of_range",
+				"replay_failed",
+				"replay_in_progress",
+				"replay_rate_limited",
+			].sort(),
+		);
+		// `not_available` IS a replay failure on an `error` frame — distinct from `reconnect_error:
+		// not_available` (the Direct-degrade signal), which is routed by message type, not by this set.
+		expect(REPLAY_ERROR_CODES).toContain("not_available");
+		expect(REPLAY_ERROR_CODES).not.toContain("invalid_json"); // the generic malformed-frame error, not a replay code
 	});
 });
 
