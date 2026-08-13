@@ -33,7 +33,8 @@ const DEFAULT_CONNECTION_TIMEOUT = 10000;
 export class WebSocketTransport extends TypedEventEmitter<TransportEvents> implements Transport {
 	private ws: WebSocket | null = null;
 	private token: string;
-	private readonly url: string;
+	/** Public so the client can derive the gateway HTTP origin for REST/push (Transport.url). */
+	readonly url: string;
 	private readonly connectionTimeout: number;
 	private readonly WebSocketCtor: WebSocketConstructor | undefined;
 	private connectionTimer: ReturnType<typeof setTimeout> | null = null;

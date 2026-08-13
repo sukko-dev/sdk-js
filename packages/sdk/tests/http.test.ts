@@ -13,7 +13,7 @@ import {
 	UnauthorizedError,
 	ValidationError,
 } from "../src/errors";
-import { type FetchLike, HttpApi, type TokenProvider } from "../src/http";
+import { type FetchLike, HttpApi, type TokenProvider, httpBaseFromWs } from "../src/http";
 
 afterEach(() => clearSecrets()); // registered secrets are process-global — reset between tests
 
@@ -32,6 +32,15 @@ function jsonResponse(body: unknown, status = 200, headers: Record<string, strin
 		headers: { "Content-Type": "application/json", ...headers },
 	});
 }
+
+describe("httpBaseFromWs", () => {
+	it("derives the HTTP origin, dropping path/query and mapping the ws schemes", () => {
+		expect(httpBaseFromWs("wss://gw.example.com/ws")).toBe("https://gw.example.com");
+		expect(httpBaseFromWs("ws://gw.example.com/ws?x=1")).toBe("http://gw.example.com");
+		expect(httpBaseFromWs("https://gw.example.com/sse")).toBe("https://gw.example.com"); // else: origin unchanged
+		expect(httpBaseFromWs("wss://gw.example.com:8443/ws")).toBe("https://gw.example.com:8443"); // port kept
+	});
+});
 
 describe("HttpApi — request", () => {
 	it("sends an authed JSON request and parses the response", async () => {

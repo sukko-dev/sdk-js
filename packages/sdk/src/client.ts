@@ -11,6 +11,7 @@ import {
 	TransportError,
 } from "./errors";
 import { HeartbeatMonitor } from "./heartbeat";
+import { HttpApi, httpBaseFromWs } from "./http";
 import type {
 	AuthAck,
 	AuthError,
@@ -35,14 +36,15 @@ import type {
 	UnsubscriptionAck,
 } from "./messages";
 import type { ConnectionState, SukkoClientEvents, SukkoClientOptions } from "./options";
+import { PushClient } from "./push";
 import { type RecoveryAction, RecoveryEngine } from "./recovery";
 import { SubscriptionState } from "./subscriptions";
 import type { Transport } from "./transport";
 
-// The credential options (`token`/`getToken`) are owned by the AuthManager, not stored here; `clock`
-// and `transport` are held on dedicated fields. What remains are the resolved timing/reconnect knobs.
+// The credential options (`token`/`getToken`) are owned by the AuthManager; `clock`/`transport`/`fetch`/
+// `baseUrl` are consumed at construction. What remains are the resolved timing/reconnect/queue knobs.
 type ResolvedOptions = Required<
-	Omit<SukkoClientOptions, "transport" | "token" | "getToken" | "clock">
+	Omit<SukkoClientOptions, "transport" | "token" | "getToken" | "clock" | "baseUrl" | "fetch">
 >;
 
 /**
@@ -90,6 +92,12 @@ export class SukkoClient extends TypedEventEmitter<SukkoClientEvents> {
 
 	// Auth — the AuthManager owns the live credential and the single-flight refresh / escalation machinery.
 	private readonly auth: AuthManager;
+
+	// REST surface — an authed HttpApi (+ push namespace) over the gateway HTTP origin, when one is
+	// resolvable (the `baseUrl` option or the transport's `url`). Null otherwise; `push`/`restPublish`
+	// then throw. `HttpApi` holds no pooled connections (per-request `fetch`), so nothing to tear down.
+	private readonly http: HttpApi | null;
+	private readonly pushClient: PushClient | null;
 
 	// Delivery — a client-lifetime bounded queue drained by `messages()`; the event-emitter is the
 	// non-back-pressured pre-queue tap (§ plan: forced dual delivery surface).
@@ -140,6 +148,9 @@ export class SukkoClient extends TypedEventEmitter<SukkoClientEvents> {
 			staleConnectionThresholdMs:
 				options.staleConnectionThresholdMs ?? SUKKO_DEFAULTS.staleConnectionThresholdMs,
 			autoConnect: options.autoConnect ?? true,
+			bufferSize: options.bufferSize ?? SUKKO_DEFAULTS.bufferSize,
+			overflowPolicy: options.overflowPolicy ?? SUKKO_DEFAULTS.overflowPolicy,
+			historyLimit: options.historyLimit ?? SUKKO_DEFAULTS.historyLimit,
 		};
 
 		this.auth = new AuthManager({
@@ -150,10 +161,26 @@ export class SukkoClient extends TypedEventEmitter<SukkoClientEvents> {
 		});
 
 		this.deliveryQueue = new DeliveryQueue({
-			maxsize: SUKKO_DEFAULTS.bufferSize,
-			policy: SUKKO_DEFAULTS.overflowPolicy,
-			floor: SUKKO_DEFAULTS.historyLimit + SUKKO_DEFAULTS.maxReplayMessages,
+			maxsize: this.options.bufferSize,
+			policy: this.options.overflowPolicy,
+			floor: this.options.historyLimit + SUKKO_DEFAULTS.maxReplayMessages,
 		});
+
+		// The gateway HTTP origin: explicit `baseUrl`, else derived from the transport's `url` (if it
+		// exposes one). The REST/push client reads the live credential fresh per request (rotation).
+		const httpBase =
+			options.baseUrl ??
+			(this.transport.url !== undefined ? httpBaseFromWs(this.transport.url) : undefined);
+		this.http =
+			httpBase !== undefined
+				? new HttpApi({
+						baseUrl: httpBase,
+						token: () => this.auth.currentToken,
+						clock: this.clock,
+						fetch: options.fetch,
+					})
+				: null;
+		this.pushClient = this.http !== null ? new PushClient(this.http) : null;
 
 		const clientId = this.loadOrCreateClientId();
 		this.recovery = new RecoveryEngine({ clientId, clock: this.clock });
@@ -329,6 +356,36 @@ export class SukkoClient extends TypedEventEmitter<SukkoClientEvents> {
 		}
 	}
 
+	/**
+	 * Publish over REST — awaitable, and works WITHOUT a live WebSocket connection (Pro-gated; a
+	 * Community license rejects with `EditionRequiredError`). Distinct from the fire-and-forget `publish`
+	 * over WS: this resolves on the gateway's ack and rejects typed on failure. Requires a resolvable
+	 * gateway HTTP origin (the `baseUrl` option or a transport exposing a `url`).
+	 */
+	async restPublish(channel: string, data: JsonObject): Promise<void> {
+		if (this.http === null) {
+			throw new ConfigurationError(
+				"restPublish requires the `baseUrl` option (or a transport exposing a `url`)",
+			);
+		}
+		await this.http.request("POST", "/api/v1/publish", { json: { channel, data } });
+	}
+
+	// ---------------------------------------------------------------------------
+	// Public API — Push
+	// ---------------------------------------------------------------------------
+
+	/** The Enterprise-gated push subscription-management namespace (`subscribe`/`unsubscribe`/
+	 * `getVapidKey`). Throws `ConfigurationError` if no gateway HTTP origin is resolvable. */
+	get push(): PushClient {
+		if (this.pushClient === null) {
+			throw new ConfigurationError(
+				"push requires the `baseUrl` option (or a transport exposing a `url`)",
+			);
+		}
+		return this.pushClient;
+	}
+
 	// ---------------------------------------------------------------------------
 	// Public API — History
 	// ---------------------------------------------------------------------------
@@ -351,16 +408,16 @@ export class SukkoClient extends TypedEventEmitter<SukkoClientEvents> {
 				"history() requires a WebSocket transport — this transport cannot send",
 			);
 		}
-		const effective = limit ?? SUKKO_DEFAULTS.historyLimit;
+		const effective = limit ?? this.options.historyLimit;
 		// The contract declares `limit` an integer in [1, WS_HISTORY_MAX_LIMIT]; validate BOTH bounds
 		// client-side (§II — never assume upstream validation) so a bad value fails fast instead of a
 		// wasted round trip bounced back as `history_invalid_limit`.
 		if (!Number.isInteger(effective) || effective < 1) {
 			throw new ConfigurationError(`history limit must be a positive integer, got ${effective}`);
 		}
-		if (effective > SUKKO_DEFAULTS.historyLimit) {
+		if (effective > this.options.historyLimit) {
 			throw new ConfigurationError(
-				`history limit ${effective} exceeds the client historyLimit ${SUKKO_DEFAULTS.historyLimit}`,
+				`history limit ${effective} exceeds the client historyLimit ${this.options.historyLimit}`,
 			);
 		}
 		this.recovery.noteHistoryRequest(channel);

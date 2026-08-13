@@ -5,11 +5,14 @@ import { CLOSE_CODES } from "../src/constants";
 import { TypedEventEmitter } from "../src/emitter";
 import {
 	ConfigurationError,
+	EditionRequiredError,
 	NotConnectedError,
+	PayloadTooLargeError,
 	RecoveryInterruptedError,
 	TransportError,
 	UnauthorizedError,
 } from "../src/errors";
+import type { FetchLike } from "../src/http";
 import type {
 	Transport,
 	TransportCapabilities,
@@ -1582,6 +1585,172 @@ describe("SukkoClient", () => {
 			expect(JSON.parse(authMsg!).data.token).toBe("refreshed");
 
 			client.disconnect();
+		});
+	});
+
+	describe("REST + push wiring", () => {
+		it("restPublish POSTs an authed publish to the gateway origin (explicit baseUrl)", async () => {
+			let url = "";
+			let init: RequestInit | undefined;
+			const fetchImpl: FetchLike = async (u, i) => {
+				url = u;
+				init = i;
+				return new Response(JSON.stringify({ channel: "acme.x", status: "accepted" }), {
+					status: 200,
+				});
+			};
+			const { client } = createClient({
+				token: "jwt",
+				baseUrl: "https://gw.example.com",
+				fetch: fetchImpl,
+			});
+			await client.restPublish("acme.x", { price: 1 });
+			expect(url).toBe("https://gw.example.com/api/v1/publish");
+			expect((init?.headers as Record<string, string>).Authorization).toBe("Bearer jwt");
+			expect(JSON.parse(init?.body as string)).toEqual({ channel: "acme.x", data: { price: 1 } });
+		});
+
+		it("derives the gateway HTTP origin from a wss transport url (wss://…/ws → https://…)", async () => {
+			let url = "";
+			class UrlTransport extends MockTransport {
+				get url(): string {
+					return "wss://gw.example.com/ws";
+				}
+			}
+			const transport = new UrlTransport();
+			const fetchImpl: FetchLike = async (u) => {
+				url = u;
+				return new Response("{}", { status: 200 });
+			};
+			const client = new SukkoClient({
+				transport,
+				autoConnect: false,
+				reconnect: false,
+				token: "jwt",
+				fetch: fetchImpl,
+			});
+			await client.restPublish("acme.x", {});
+			expect(url).toBe("https://gw.example.com/api/v1/publish");
+		});
+
+		it("push and restPublish throw ConfigurationError when no gateway origin is resolvable", async () => {
+			const { client } = createClient({ token: "jwt" }); // MockTransport has no url, no baseUrl
+			expect(() => client.push).toThrow(ConfigurationError);
+			await expect(client.restPublish("acme.x", {})).rejects.toBeInstanceOf(ConfigurationError);
+		});
+
+		it("restPublish rejects typed on the gateway error map (403 edition, 413 over-size)", async () => {
+			const edition = createClient({
+				token: "jwt",
+				baseUrl: "https://gw",
+				fetch: async () =>
+					new Response(JSON.stringify({ code: "EDITION_LIMIT", message: "pro" }), { status: 403 }),
+			});
+			await expect(edition.client.restPublish("a", {})).rejects.toBeInstanceOf(
+				EditionRequiredError,
+			);
+
+			const tooLarge = createClient({
+				token: "jwt",
+				baseUrl: "https://gw",
+				fetch: async () =>
+					new Response(JSON.stringify({ code: "MESSAGE_TOO_LARGE", message: "big" }), {
+						status: 413,
+					}),
+			});
+			await expect(tooLarge.client.restPublish("a", {})).rejects.toBeInstanceOf(
+				PayloadTooLargeError,
+			);
+		});
+
+		it("restPublish carries the rotated JWT after escalate (fresh credential per request)", async () => {
+			const auths: Array<string | undefined> = [];
+			const fetchImpl: FetchLike = async (_u, i) => {
+				auths.push((i?.headers as Record<string, string>).Authorization);
+				return new Response("{}", { status: 200 });
+			};
+			const { client, transport } = createClient({
+				token: "api-key-old",
+				baseUrl: "https://gw",
+				fetch: fetchImpl,
+			});
+			client.connect();
+			await vi.advanceTimersByTimeAsync(0);
+			await client.restPublish("a", {}); // Bearer api-key-old
+
+			const escalating = client.escalate("jwt-new");
+			await vi.advanceTimersByTimeAsync(0);
+			transport.simulateMessage({ type: "auth_ack", data: { exp: 0 } });
+			await escalating;
+			await client.restPublish("a", {}); // Bearer jwt-new — the HttpApi reads auth.currentToken fresh
+
+			expect(auths).toEqual(["Bearer api-key-old", "Bearer jwt-new"]);
+			client.disconnect();
+		});
+
+		it("client.push shares the client's HttpApi + auth (getVapidKey hits the gateway)", async () => {
+			let url = "";
+			let init: RequestInit | undefined;
+			const fetchImpl: FetchLike = async (u, i) => {
+				url = u;
+				init = i;
+				return new Response(JSON.stringify({ public_key: "BNcR-key" }), { status: 200 });
+			};
+			const { client } = createClient({
+				token: "jwt",
+				baseUrl: "https://gw.example.com",
+				fetch: fetchImpl,
+			});
+			expect(await client.push.getVapidKey()).toBe("BNcR-key");
+			expect(url).toBe("https://gw.example.com/api/v1/push/vapid-key");
+			expect((init?.headers as Record<string, string>).Authorization).toBe("Bearer jwt");
+		});
+
+		it("honors the historyLimit option (omitted limit defaults to it) and the queue floor", async () => {
+			const { client, transport } = createClient({ historyLimit: 10 });
+			client.connect();
+			await vi.advanceTimersByTimeAsync(0);
+
+			client.history("acme.x"); // omitted → defaults to the historyLimit OPTION (10), not the global 100
+			const frame = transport.sent.find((s) => JSON.parse(s).type === "history");
+			expect(JSON.parse(frame!).data.limit).toBe(10);
+
+			expect(() => client.history("acme.x", 11)).toThrow(ConfigurationError); // > the 10 option
+			client.disconnect();
+
+			// bufferSize below historyLimit + maxReplayMessages (10 + 100 = 110) fails fast at construction.
+			expect(
+				() =>
+					new SukkoClient({
+						transport: new MockTransport(),
+						autoConnect: false,
+						bufferSize: 50,
+						historyLimit: 10,
+					}),
+			).toThrow(ConfigurationError);
+		});
+
+		it("threads overflowPolicy to the delivery queue (drop_oldest vs drop_newest)", async () => {
+			async function firstRetained(policy: "drop_oldest" | "drop_newest"): Promise<number> {
+				const { client, transport } = createClient({
+					historyLimit: 1,
+					bufferSize: 101, // floor = historyLimit(1) + maxReplayMessages(100)
+					overflowPolicy: policy,
+				});
+				client.connect();
+				await vi.advanceTimersByTimeAsync(0);
+				const iterator = client.messages();
+				for (let n = 0; n < 103; n++) {
+					transport.simulateMessage({ type: "message", ts: n, channel: "acme.x", data: { n } });
+				}
+				const overflow = (await iterator.next()).value; // coalesced overflow marker first
+				expect(overflow).toMatchObject({ type: "overflow", dropped: 2 });
+				const firstMsg = (await iterator.next()).value as { data: { n: number } };
+				client.disconnect();
+				return firstMsg.data.n;
+			}
+			expect(await firstRetained("drop_oldest")).toBe(2); // dropped the 2 OLDEST → first retained is #2
+			expect(await firstRetained("drop_newest")).toBe(0); // dropped the 2 NEWEST → first retained is #0
 		});
 	});
 });

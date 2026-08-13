@@ -60,6 +60,10 @@ export interface Transport {
 	readonly state: TransportState;
 	/** Declared capabilities of this transport. */
 	readonly capabilities: TransportCapabilities;
+	/** The connection URL, when the transport has one — lets the client derive the gateway HTTP origin
+	 * for REST/push (`httpBaseFromWs`) without a separate `baseUrl` option. Optional: a transport need
+	 * not expose it. */
+	readonly url?: string;
 	/** Register an event listener. Returns an unsubscribe function. */
 	on<K extends keyof TransportEvents>(event: K, handler: TransportEvents[K]): () => void;
 	/** Remove a specific event listener. */

@@ -161,3 +161,12 @@ function parseRetryAfter(headers: Headers): number | undefined {
 function messageOf(err: unknown): string {
 	return err instanceof Error ? err.message : String(err);
 }
+
+/** Derive the gateway's HTTP origin from a connection URL: `wss://host/ws` → `https://host`,
+ * `ws://host` → `http://host`; any other scheme's origin is returned unchanged. */
+export function httpBaseFromWs(url: string): string {
+	const parsed = new URL(url);
+	const scheme =
+		parsed.protocol === "wss:" ? "https:" : parsed.protocol === "ws:" ? "http:" : parsed.protocol;
+	return `${scheme}//${parsed.host}`;
+}

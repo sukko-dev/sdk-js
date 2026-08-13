@@ -3,7 +3,9 @@
 // knobs, and the typed event map.
 
 import type { Clock } from "./_clock";
+import type { OverflowPolicy } from "./backpressure";
 import type { RecoveryInterruptedError } from "./errors";
+import type { FetchLike } from "./http";
 import type {
 	AuthAck,
 	AuthError,
@@ -87,6 +89,20 @@ export interface SukkoClientOptions {
 	autoConnect?: boolean;
 	/** Async callback to fetch a fresh token. Called during auth refresh. */
 	getToken?: () => Promise<string>;
+	/** Delivery-queue capacity. Must be ≥ `historyLimit + maxReplayMessages` so a recovery burst fits.
+	 * Default: 256. */
+	bufferSize?: number;
+	/** What the delivery queue drops when it overflows on a transport that can't back-pressure. Default:
+	 * `drop_oldest`. */
+	overflowPolicy?: OverflowPolicy;
+	/** Max messages a `history()` call may request (also the recovery-burst floor). Default: 100. */
+	historyLimit?: number;
+	/** Gateway HTTP origin for REST publish + push (e.g. `https://gw.example.com`). Defaults to the
+	 * origin derived from the transport's `url` (`wss://…/ws` → `https://…`) when the transport exposes
+	 * one; required otherwise before `restPublish`/`push` can be used. */
+	baseUrl?: string;
+	/** Injectable `fetch` for the REST/push client (tests). Default: the global `fetch`. */
+	fetch?: FetchLike;
 	/** Injectable clock/sleep/RNG seam (NFR-006) for deterministic timing tests. Default: SystemClock. */
 	clock?: Clock;
 }

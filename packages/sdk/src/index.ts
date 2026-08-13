@@ -60,17 +60,31 @@ export type {
 	ReplayMessage,
 } from "./messages";
 
-// Errors — the SukkoError base (catch-all) plus every error a public method throws or an event carries:
-// `history()` throws NotConnectedError / TransportError / ConfigurationError, `recoveryInterrupted`
-// carries RecoveryInterruptedError. The remaining hierarchy is exported by the T041 public-API pass.
+// Push subscription management — the `client.push` namespace type surface.
+export { PushClient } from "./push";
+export type { PushPlatform, PushSubscribeOptions } from "./push";
+
+// Errors — the SukkoError base (catch-all) plus every error a public method throws or an event carries.
+// `restPublish`/`push` add the REST error map (edition, over-size, forbidden, conflict, validation).
 export {
 	ConfigurationError,
+	ConflictError,
+	EditionRequiredError,
+	ForbiddenError,
 	NotConnectedError,
+	PayloadTooLargeError,
+	ProtocolError,
+	RateLimitedError,
 	RecoveryInterruptedError,
+	ServiceUnavailableError,
 	SukkoError,
 	TransportError,
 	UnauthorizedError,
+	ValidationError,
 } from "./errors";
+
+// Delivery-queue overflow policy — referenced by the `overflowPolicy` client option.
+export type { OverflowPolicy } from "./backpressure";
 
 // Constants
 export { CLOSE_CODES, CLIENT_ID_KEY, SUKKO_DEFAULTS } from "./constants";

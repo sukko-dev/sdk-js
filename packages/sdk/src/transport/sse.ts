@@ -99,6 +99,11 @@ export class SseTransport extends TypedEventEmitter<TransportEvents> implements 
 		return this._state;
 	}
 
+	/** The configured gateway URL — lets the client derive the HTTP origin for REST/push. */
+	get url(): string {
+		return this.baseUrl;
+	}
+
 	get capabilities(): TransportCapabilities {
 		return { canSend: false, canSubscribe: false, canPublish: false, canPauseReceive: false };
 	}
