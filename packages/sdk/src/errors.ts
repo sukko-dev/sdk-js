@@ -70,6 +70,19 @@ export class RateLimitedError extends SukkoError {
 	}
 }
 
+/** The published payload exceeded the gateway's size limit (HTTP 413). */
+export class PayloadTooLargeError extends SukkoError {}
+
+/** The request was malformed or failed validation (HTTP 400 — invalid request/channel). */
+export class ValidationError extends SukkoError {}
+
+/** The request was refused by policy (HTTP 403 — channel-rule denial, api-key scope, tenant
+ * mismatch). Distinct from `EditionRequiredError`, which is specifically the `EDITION_LIMIT` gate. */
+export class ForbiddenError extends SukkoError {}
+
+/** The request conflicts with server state (HTTP 409 — e.g. a publish with no matching route). */
+export class ConflictError extends SukkoError {}
+
 /**
  * Channel-scoped `error`-frame codes that mean an in-flight replay was rejected or failed
  * (→ `RecoveryInterruptedError`). Mirrors the AsyncAPI `receiveReplayError` enum exactly (§I): every
@@ -88,20 +101,33 @@ export const REPLAY_ERROR_CODES: readonly string[] = [
 	"replay_failed",
 ];
 
-/** Map a gateway HTTP status to a typed error (used by the REST/SSE layer). */
-export function errorFromHttpStatus(status: number, code: string, message: string): SukkoError {
+/** Map a gateway HTTP status to a typed error (used by the REST/SSE layer). `retryAfterMs` is the
+ * parsed `Retry-After` (HTTP 429) when present. */
+export function errorFromHttpStatus(
+	status: number,
+	code: string,
+	message: string,
+	retryAfterMs?: number,
+): SukkoError {
+	// The `EDITION_LIMIT` code is authoritative for the edition gate regardless of status; check it
+	// FIRST so a 403 carrying it maps to EditionRequiredError while a plain 403 maps to ForbiddenError.
+	if (code === "EDITION_LIMIT") return new EditionRequiredError(message);
 	switch (status) {
+		case 400:
+			return new ValidationError(message);
 		case 401:
 			return new UnauthorizedError(message);
 		case 403:
-			return new EditionRequiredError(message);
+			return new ForbiddenError(message);
+		case 409:
+			return new ConflictError(message);
+		case 413:
+			return new PayloadTooLargeError(message);
 		case 429:
-			return new RateLimitedError(message);
+			return new RateLimitedError(message, retryAfterMs);
 		case 503:
 			return new ServiceUnavailableError(message);
 		default:
-			return code === "EDITION_LIMIT"
-				? new EditionRequiredError(message)
-				: new ProtocolError(`${code}: ${message}`);
+			return new ProtocolError(`${code}: ${message}`);
 	}
 }

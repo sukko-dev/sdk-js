@@ -7,4 +7,4 @@ export type {
 	TransportState,
 } from "./base";
 export { SseTransport } from "./sse";
-export type { FetchLike, SseTransportOptions } from "./sse";
+export type { SseTransportOptions } from "./sse";

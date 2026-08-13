@@ -16,10 +16,8 @@
 import { type Clock, SystemClock } from "../_clock";
 import { SUKKO_DEFAULTS } from "../constants";
 import { TypedEventEmitter } from "../emitter";
+import type { FetchLike } from "../http";
 import type { Transport, TransportCapabilities, TransportEvents, TransportState } from "./base";
-
-/** The subset of the WHATWG `fetch` signature the transport uses; injectable for tests. */
-export type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
 
 export interface SseTransportOptions {
 	/** Base gateway URL; `GET {url}/sse` is opened (or `{url}` already ending in `/sse`). */

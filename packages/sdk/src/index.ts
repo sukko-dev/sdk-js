@@ -12,10 +12,10 @@ export type {
 	TransportCapabilities,
 	TransportEvents,
 	TransportState,
-	FetchLike,
 	SseTransportOptions,
 } from "./transport";
 export { SseTransport } from "./transport";
+export type { FetchLike } from "./http";
 
 // Client configuration + event surface
 export type { ConnectionState, SukkoClientEvents, SukkoClientOptions } from "./options";
