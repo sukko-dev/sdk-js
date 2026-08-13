@@ -38,6 +38,10 @@ export interface HttpApiOptions {
 export interface RequestOptions {
 	/** JSON request body; sets `Content-Type: application/json`. */
 	json?: unknown;
+	/** A raw, pre-serialized request body for cases `JSON.stringify` can't express — the push
+	 * `device_id` int64 must ride the wire as an UNQUOTED number literal. Mutually exclusive with
+	 * `json`; also sets `Content-Type: application/json`. */
+	body?: string;
 	/** Marks an endpoint whose only 4xx cause is the edition gate (the push endpoints), so a 403
 	 * reliably becomes `EditionRequiredError` even when the gateway omits the `code`. */
 	editionGated?: boolean;
@@ -68,11 +72,28 @@ export class HttpApi {
 		path: string,
 		options: RequestOptions = {},
 	): Promise<T> {
+		const text = await this.requestText(method, path, options);
+		if (text === "") return {} as T;
+		try {
+			return JSON.parse(text) as T;
+		} catch (err) {
+			throw new ProtocolError(`malformed response body: ${messageOf(err)}`);
+		}
+	}
+
+	/**
+	 * Like `request` but resolves to the RAW response text (still authed + typed-error mapped). For a
+	 * caller that must parse the body itself — the push `device_id` is an int64 that `JSON.parse` would
+	 * round through a lossy JS `number`, so it is extracted from the raw text as a string.
+	 */
+	async requestText(method: string, path: string, options: RequestOptions = {}): Promise<string> {
 		const token = this.token();
 		registerSecret(token); // §IX: mask it if a URL/header ever lands in an error string
 		const headers: Record<string, string> = {};
 		if (token) headers.Authorization = `Bearer ${token}`;
-		if (options.json !== undefined) headers["Content-Type"] = "application/json";
+		const body =
+			options.body ?? (options.json !== undefined ? JSON.stringify(options.json) : undefined);
+		if (body !== undefined) headers["Content-Type"] = "application/json";
 
 		// Race the request against a clock-driven deadline (aborts the fetch on timeout).
 		const aborter = new AbortController();
@@ -87,7 +108,7 @@ export class HttpApi {
 			response = await this.fetchImpl(`${this.baseUrl}${path}`, {
 				method,
 				headers,
-				body: options.json !== undefined ? JSON.stringify(options.json) : undefined,
+				body,
 				signal: aborter.signal,
 			});
 		} catch (err) {
@@ -99,13 +120,7 @@ export class HttpApi {
 		if (response.status >= 400) {
 			throw await errorForResponse(response, options.editionGated ?? false);
 		}
-		const text = await response.text();
-		if (text === "") return {} as T;
-		try {
-			return JSON.parse(text) as T;
-		} catch (err) {
-			throw new ProtocolError(`malformed response body: ${messageOf(err)}`);
-		}
+		return response.text();
 	}
 }
 
@@ -124,7 +139,14 @@ async function errorForResponse(response: Response, editionGated: boolean): Prom
 	} catch {
 		// Non-JSON error body — fall back to the status→type mapping with empty code/message.
 	}
-	return errorFromHttpStatus(response.status, code, message, parseRetryAfter(response.headers));
+	// §IX: the gateway's message/code can echo the rejected credential (e.g. an auth error quoting the
+	// token) — redact before it becomes a thrown error string.
+	return errorFromHttpStatus(
+		response.status,
+		redact(code),
+		redact(message),
+		parseRetryAfter(response.headers),
+	);
 }
 
 /** Parse a `Retry-After` header (delta-seconds → ms). Undefined if absent/non-numeric — the HTTP-date

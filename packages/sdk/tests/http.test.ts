@@ -88,6 +88,17 @@ describe("HttpApi — request", () => {
 		expect(init?.body).toBeUndefined();
 	});
 
+	it("sends a raw pre-serialized body with Content-Type: application/json", async () => {
+		let init: RequestInit | undefined;
+		const { api } = makeApi(async (_u, i) => {
+			init = i;
+			return new Response(null, { status: 204 });
+		});
+		await api.requestText("DELETE", "/p", { body: '{"device_id":42}' });
+		expect((init?.headers as Record<string, string>)["Content-Type"]).toBe("application/json");
+		expect(init?.body).toBe('{"device_id":42}'); // verbatim, not re-serialized
+	});
+
 	it("returns {} for an empty 2xx body", async () => {
 		const { api } = makeApi(async () => new Response(null, { status: 204 }));
 		expect(await api.request("POST", "/p")).toEqual({});
@@ -176,6 +187,17 @@ describe("HttpApi — timeout + redaction", () => {
 		const pending = api.request("POST", "/p");
 		await clock.advance(10000); // connectTimeoutMs default → aborts the fetch
 		await expect(pending).rejects.toBeInstanceOf(TransportError);
+	});
+
+	it("redacts a registered token echoed in a gateway error MESSAGE (§IX, typed-error path)", async () => {
+		const secret = "leakedtokenvalue12345";
+		const { api } = makeApi(
+			async () => jsonResponse({ code: "INVALID_TOKEN", message: `rejected ${secret}` }, 401),
+			() => secret,
+		);
+		const err = (await api.request("POST", "/p").catch((e: unknown) => e)) as Error;
+		expect(err).toBeInstanceOf(UnauthorizedError);
+		expect(err.message).not.toContain(secret); // the 4xx typed-error path redacts too, not just TransportError
 	});
 
 	it("redacts a registered token in a thrown TransportError message", async () => {
