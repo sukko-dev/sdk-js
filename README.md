@@ -212,7 +212,7 @@ new SukkoClient(options: SukkoClientOptions)
 | `staleConnectionThresholdMs` | `number` | `30000` | Ms of inbound silence before the connection is treated as stale and recycled |
 | `getToken` | `() => Promise<string>` | — | Async token refresh callback |
 
-**Methods**: `connect()`, `disconnect()`, `subscribe(channels)`, `unsubscribe(channels)`, `publish(channel, data)`, `history(channel, limit?)`, `updateToken(token)`, `refreshToken()`, `reconnectWithReplay()`
+**Methods**: `connect()`, `disconnect()`, `subscribe(channels)`, `unsubscribe(channels)`, `publish(channel, data)`, `history(channel, limit?)`, `updateToken(token)`, `refreshToken()`, `escalate(jwt)`
 
 **Events**: `message`, `stateChange`, `subscriptionAck`, `subscribeError`, `unsubscriptionAck`, `unsubscribeError`, `publishAck`, `publishError`, `reconnectAck`, `reconnectError`, `authAck`, `authError`, `pong`, `error`, `historyError`, `recoveryInterrupted`, `close`, `reconnecting`
 

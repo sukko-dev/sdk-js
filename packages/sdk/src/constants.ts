@@ -1,7 +1,6 @@
 /**
  * Default configuration values for SukkoClient. Keys are camelCase, in **milliseconds** (the Defaults
- * & Units table's canonical unit). Auth (`authRefresh*`) and SSE (`sseIdleTimeoutMs`) knobs are added
- * when those phases land.
+ * & Units table's canonical unit). The SSE (`sseIdleTimeoutMs`) knob is added when that phase lands.
  */
 export const SUKKO_DEFAULTS = {
 	reconnectMaxAttempts: 5, // 0 = unlimited
@@ -21,6 +20,13 @@ export const SUKKO_DEFAULTS = {
 	// recoveryDeadlineMs = 2× server WS_REPLAY_TIMEOUT, an idle timer reset on each recovery frame (FR-006).
 	replayFloorMs: 10000,
 	recoveryDeadlineMs: 10000,
+	// Auth refresh (T031). authRefreshFloorMs = min interval between refresh sends (floors an
+	// auth_error→refresh loop); authRefreshLeadMs = fire the proactive refresh this long before
+	// auth_ack.exp; authRefreshBackoffMaxMs = cap on the reactive-failure backoff (const, not a caller
+	// knob — tokens are ≤15 min so a 5-minute ceiling is comfortably safe).
+	authRefreshFloorMs: 30000,
+	authRefreshLeadMs: 30000,
+	authRefreshBackoffMaxMs: 300000,
 } as const;
 
 /** WebSocket close codes used by the Sukko protocol. */

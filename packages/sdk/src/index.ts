@@ -65,6 +65,7 @@ export {
 	RecoveryInterruptedError,
 	SukkoError,
 	TransportError,
+	UnauthorizedError,
 } from "./errors";
 
 // Constants

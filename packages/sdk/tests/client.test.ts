@@ -8,6 +8,7 @@ import {
 	NotConnectedError,
 	RecoveryInterruptedError,
 	TransportError,
+	UnauthorizedError,
 } from "../src/errors";
 import type {
 	Transport,
@@ -99,6 +100,30 @@ function createClient(overrides: Partial<ConstructorParameters<typeof SukkoClien
 		...(overrides.transport ? {} : { transport }),
 	});
 	return { client, transport };
+}
+
+/** A client with automatic reconnect + deterministic Full-Jitter backoff (rng must be mocked to 0.5). */
+function createReconnectableClient(): { client: SukkoClient; transport: MockTransport } {
+	const transport = new MockTransport();
+	const client = new SukkoClient({
+		transport,
+		autoConnect: true,
+		reconnect: true,
+		backoffBaseMs: 1000,
+		backoffMaxMs: 1000,
+	});
+	return { client, transport };
+}
+
+/** Drive one automatic reconnect (reconnect:true) and return the resulting `reconnect` frame's `data`. */
+async function reconnectFrame(
+	transport: MockTransport,
+): Promise<Record<string, unknown> | undefined> {
+	transport.sent.length = 0;
+	transport.simulateClose(1006, "reconnect"); // → reconnecting
+	await vi.advanceTimersByTimeAsync(1000); // past the 500ms backoff (rng 0.5) → the second open
+	const frame = transport.sent.find((s) => JSON.parse(s).type === "reconnect");
+	return frame ? (JSON.parse(frame).data as Record<string, unknown>) : undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -472,25 +497,46 @@ describe("SukkoClient", () => {
 			client.disconnect();
 		});
 
-		it("refreshToken calls getToken and sends auth message", async () => {
+		it("refreshToken calls getToken and sends auth, resolving on auth_ack (single-flight)", async () => {
 			const { client, transport } = createClient({
 				getToken: async () => "fresh-token",
 			});
 
 			client.connect();
 			await vi.advanceTimersByTimeAsync(0);
-			await client.refreshToken();
 
+			// refreshToken now AWAITS the ack — start it, assert the frame, then resolve it via auth_ack.
+			const refreshing = client.refreshToken();
+			await vi.advanceTimersByTimeAsync(0);
 			const authMsg = transport.sent.find((s) => JSON.parse(s).type === "auth");
 			expect(authMsg).toBeDefined();
 			expect(JSON.parse(authMsg!).data.token).toBe("fresh-token");
 
+			transport.simulateMessage({ type: "auth_ack", data: { exp: 0 } }); // 0 = no-expiry (no proactive timer)
+			await expect(refreshing).resolves.toBeUndefined();
+
 			client.disconnect();
 		});
 
-		it("refreshToken throws if no getToken configured", async () => {
-			const { client } = createClient();
-			await expect(client.refreshToken()).rejects.toThrow("no getToken callback");
+		it("refreshToken rejects with NotConnectedError while disconnected", async () => {
+			const { client } = createClient({ getToken: async () => "t" });
+			await expect(client.refreshToken()).rejects.toThrow(NotConnectedError);
+		});
+
+		it("refreshToken rejects when the server sends auth_error", async () => {
+			const { client, transport } = createClient({ getToken: async () => "bad-token" });
+			client.connect();
+			await vi.advanceTimersByTimeAsync(0);
+
+			const refreshing = client.refreshToken();
+			await vi.advanceTimersByTimeAsync(0);
+			transport.simulateMessage({
+				type: "auth_error",
+				data: { code: "invalid_token", message: "nope" },
+			});
+			await expect(refreshing).rejects.toThrow(UnauthorizedError);
+
+			client.disconnect();
 		});
 	});
 
@@ -786,13 +832,15 @@ describe("SukkoClient", () => {
 		});
 	});
 
-	describe("replay", () => {
-		it("sends reconnect message with last_pos when pos values are tracked", async () => {
-			const { client, transport } = createClient();
-			client.connect();
-			await vi.advanceTimersByTimeAsync(0);
+	describe("reconnect-replay", () => {
+		// buildReconnect()'s pos-map content (only-channels-with-pos, empty-probe, forget-exclusion) is
+		// unit-tested in recovery.test.ts; these assert the CLIENT resends that frame automatically on
+		// reconnect and that unsubscribe (→ recovery.forget) is reflected in it.
+		beforeEach(() => vi.spyOn(Math, "random").mockReturnValue(0.5));
 
-			// Simulate a message with pos to populate lastPos
+		it("resends the reconnect-replay frame with stored pos automatically on reconnect", async () => {
+			const { client, transport } = createReconnectableClient();
+			await vi.advanceTimersByTimeAsync(0);
 			transport.simulateMessage({
 				type: "message",
 				ts: Date.now(),
@@ -801,84 +849,15 @@ describe("SukkoClient", () => {
 				pos: "3-42",
 			});
 
-			client.reconnectWithReplay();
-
-			const reconnectMsg = transport.sent.find((s) => JSON.parse(s).type === "reconnect");
-			expect(reconnectMsg).toBeDefined();
-			const parsed = JSON.parse(reconnectMsg!);
-			expect(parsed.data.last_pos["tenant.BTC.trade"]).toBe("3-42");
+			const data = await reconnectFrame(transport);
+			expect(data?.last_pos).toEqual({ "tenant.BTC.trade": "3-42" });
 
 			client.disconnect();
 		});
 
-		it("does not send reconnect when disconnected", () => {
-			const { client, transport } = createClient();
-			client.reconnectWithReplay();
-			expect(transport.sent.length).toBe(0);
-		});
-
-		it("probes with an empty last_pos once connected, even with no pos tracked (Direct detection)", async () => {
-			const { client, transport } = createClient();
-			client.connect();
+		it("excludes an unsubscribed channel's pos from the reconnect-replay (unsubscribe → forget)", async () => {
+			const { client, transport } = createReconnectableClient();
 			await vi.advanceTimersByTimeAsync(0);
-
-			// Simulate a message WITHOUT pos (e.g. Direct backend) — nothing to anchor a resume.
-			transport.simulateMessage({
-				type: "message",
-				ts: Date.now(),
-				channel: "tenant.BTC.trade",
-				data: { price: 50000 },
-			});
-
-			client.reconnectWithReplay();
-
-			// The client has connected once, so it PROBES with an empty last_pos to elicit `not_available`
-			// on a Direct backend (FR-007) rather than silently dropping the reconnect.
-			const reconnectMsg = transport.sent.find((s) => JSON.parse(s).type === "reconnect");
-			expect(reconnectMsg).toBeDefined();
-			expect(JSON.parse(reconnectMsg!).data.last_pos).toEqual({});
-
-			client.disconnect();
-		});
-
-		it("only includes channels with pos in last_pos map", async () => {
-			const { client, transport } = createClient();
-			client.connect();
-			await vi.advanceTimersByTimeAsync(0);
-
-			// Channel with pos (Kafka backend)
-			transport.simulateMessage({
-				type: "message",
-				ts: Date.now(),
-				channel: "tenant.BTC.trade",
-				data: {},
-				pos: "1-100",
-			});
-			// Channel without pos (Direct backend)
-			transport.simulateMessage({
-				type: "message",
-				ts: Date.now(),
-				channel: "tenant.ETH.trade",
-				data: {},
-			});
-
-			client.reconnectWithReplay();
-
-			const reconnectMsg = transport.sent.find((s) => JSON.parse(s).type === "reconnect");
-			expect(reconnectMsg).toBeDefined();
-			const parsed = JSON.parse(reconnectMsg!);
-			expect(parsed.data.last_pos["tenant.BTC.trade"]).toBe("1-100");
-			expect(parsed.data.last_pos["tenant.ETH.trade"]).toBeUndefined();
-
-			client.disconnect();
-		});
-
-		it("does not include unsubscribed channels in last_pos", async () => {
-			const { client, transport } = createClient();
-			client.connect();
-			await vi.advanceTimersByTimeAsync(0);
-
-			// Receive pos on two channels
 			transport.simulateMessage({
 				type: "message",
 				ts: Date.now(),
@@ -893,18 +872,10 @@ describe("SukkoClient", () => {
 				data: {},
 				pos: "3-99",
 			});
-
-			// Unsubscribe from BTC
 			client.unsubscribe(["tenant.BTC.trade"]);
-			client.reconnectWithReplay();
 
-			const reconnectMsg = transport.sent.find((s) => JSON.parse(s).type === "reconnect");
-			expect(reconnectMsg).toBeDefined();
-			const parsed = JSON.parse(reconnectMsg!);
-			// Unsubscribed channel must not appear
-			expect(parsed.data.last_pos["tenant.BTC.trade"]).toBeUndefined();
-			// Still-subscribed channel must be present
-			expect(parsed.data.last_pos["tenant.ETH.trade"]).toBe("3-99");
+			const data = await reconnectFrame(transport);
+			expect(data?.last_pos).toEqual({ "tenant.ETH.trade": "3-99" });
 
 			client.disconnect();
 		});
@@ -1011,11 +982,23 @@ describe("SukkoClient", () => {
 			const { value } = await pending;
 			expect(value).toMatchObject({ type: "replay_message", channel: "tenant.BTC.trade" });
 
-			// The replayed pos anchors the next reconnect-replay.
-			transport.sent.length = 0;
-			client.reconnectWithReplay();
-			const reconnect = transport.sent.find((s) => JSON.parse(s).type === "reconnect");
-			expect(JSON.parse(reconnect!).data.last_pos["tenant.BTC.trade"]).toBe("5-7");
+			client.disconnect();
+		});
+
+		it("anchors the reconnect-replay from a replayed message's pos", async () => {
+			vi.spyOn(Math, "random").mockReturnValue(0.5);
+			const { client, transport } = createReconnectableClient();
+			await vi.advanceTimersByTimeAsync(0);
+			transport.simulateMessage({
+				type: "replay_message",
+				channel: "tenant.BTC.trade",
+				ts: Date.now(),
+				data: { price: 1 },
+				pos: "5-7",
+			});
+
+			const data = await reconnectFrame(transport);
+			expect(data?.last_pos).toEqual({ "tenant.BTC.trade": "5-7" });
 
 			client.disconnect();
 		});
@@ -1040,10 +1023,22 @@ describe("SukkoClient", () => {
 			const channels = [v1, v2].map((v) => (v as { channel: string }).channel).sort();
 			expect(channels).toEqual(["tenant.BTC.trade", "tenant.ETH.trade"]);
 
-			// Once Direct, the client stops probing.
-			transport.sent.length = 0;
-			client.reconnectWithReplay();
-			expect(transport.sent.find((s) => JSON.parse(s).type === "reconnect")).toBeUndefined();
+			client.disconnect();
+		});
+
+		it("stops sending reconnect frames once degraded to Direct (no more probing)", async () => {
+			vi.spyOn(Math, "random").mockReturnValue(0.5);
+			const { client, transport } = createReconnectableClient();
+			await vi.advanceTimersByTimeAsync(0);
+			transport.simulateMessage({
+				type: "reconnect_error",
+				code: "not_available",
+				message: "direct",
+			});
+
+			// Direct persists across reconnect → buildReconnect() returns null → no reconnect frame.
+			const data = await reconnectFrame(transport);
+			expect(data).toBeUndefined();
 
 			client.disconnect();
 		});
@@ -1323,8 +1318,8 @@ describe("SukkoClient", () => {
 		});
 
 		it("does NOT anchor recovery pos from history frames (no backward anchor)", async () => {
-			const { client, transport } = createClient();
-			client.connect();
+			vi.spyOn(Math, "random").mockReturnValue(0.5);
+			const { client, transport } = createReconnectableClient();
 			await vi.advanceTimersByTimeAsync(0);
 
 			// A live message advances the anchor to 5-100.
@@ -1345,10 +1340,8 @@ describe("SukkoClient", () => {
 				history: true,
 			});
 
-			transport.sent.length = 0;
-			client.reconnectWithReplay();
-			const reconnect = transport.sent.find((s) => JSON.parse(s).type === "reconnect");
-			expect(JSON.parse(reconnect!).data.last_pos["tenant.BTC.trade"]).toBe("5-100");
+			const data = await reconnectFrame(transport);
+			expect(data?.last_pos).toEqual({ "tenant.BTC.trade": "5-100" });
 
 			client.disconnect();
 		});
@@ -1463,6 +1456,130 @@ describe("SukkoClient", () => {
 			// The armed deadline was cleared — no spurious RecoveryInterrupted 10s later.
 			await vi.advanceTimersByTimeAsync(20000);
 			expect(recovery).not.toHaveBeenCalled();
+
+			client.disconnect();
+		});
+	});
+
+	describe("auth integration", () => {
+		it("marks subscription_ack grants and re-subscribes the not-granted delta on escalate", async () => {
+			const { client, transport } = createClient();
+			client.subscribe(["tenant.BTC.trade", "tenant.ETH.trade"]);
+			client.connect();
+			await vi.advanceTimersByTimeAsync(0);
+
+			// The api-key is granted only BTC; ETH is filtered (retained in the not-granted delta).
+			transport.simulateMessage({
+				type: "subscription_ack",
+				subscribed: ["tenant.BTC.trade"],
+				count: 1,
+			});
+			transport.sent.length = 0;
+
+			const escalating = client.escalate("jwt-token");
+			await vi.advanceTimersByTimeAsync(0);
+			const authMsg = transport.sent.find((s) => JSON.parse(s).type === "auth");
+			expect(JSON.parse(authMsg!).data.token).toBe("jwt-token"); // escalation sent its own frame
+
+			transport.simulateMessage({ type: "auth_ack", data: { exp: 0 } });
+			await escalating;
+
+			// On success the not-granted delta (ETH) is re-subscribed.
+			const sub = transport.sent.find((s) => JSON.parse(s).type === "subscribe");
+			expect(JSON.parse(sub!).data.channels).toEqual(["tenant.ETH.trade"]);
+
+			client.disconnect();
+		});
+
+		it("keeps a forcibly-unsubscribed channel in the escalation delta (forced unsubscription_ack)", async () => {
+			const { client, transport } = createClient();
+			client.subscribe(["tenant.BTC.trade", "tenant.ETH.trade"]);
+			client.connect();
+			await vi.advanceTimersByTimeAsync(0);
+
+			// Both channels granted…
+			transport.simulateMessage({
+				type: "subscription_ack",
+				subscribed: ["tenant.BTC.trade", "tenant.ETH.trade"],
+				count: 2,
+			});
+			// …then ETH is forcibly unsubscribed (permission change) — its grant drops but it stays desired.
+			transport.simulateMessage({
+				type: "unsubscription_ack",
+				unsubscribed: ["tenant.ETH.trade"],
+				forced: true,
+			});
+			transport.sent.length = 0;
+
+			const escalating = client.escalate("jwt-token");
+			await vi.advanceTimersByTimeAsync(0);
+			transport.simulateMessage({ type: "auth_ack", data: { exp: 0 } });
+			await escalating;
+
+			// The forcibly-dropped channel is re-subscribed via the not-granted delta.
+			const sub = transport.sent.find((s) => JSON.parse(s).type === "subscribe");
+			expect(JSON.parse(sub!).data.channels).toEqual(["tenant.ETH.trade"]);
+
+			client.disconnect();
+		});
+
+		it("a non-forced unsubscription_ack leaves grants intact (no spurious re-subscribe on escalate)", async () => {
+			const { client, transport } = createClient();
+			client.subscribe(["tenant.BTC.trade"]);
+			client.connect();
+			await vi.advanceTimersByTimeAsync(0);
+
+			transport.simulateMessage({
+				type: "subscription_ack",
+				subscribed: ["tenant.BTC.trade"],
+				count: 1,
+			});
+			// A non-forced unsubscription_ack must NOT drop the grant (only `forced: true` does).
+			transport.simulateMessage({
+				type: "unsubscription_ack",
+				unsubscribed: ["tenant.BTC.trade"],
+				count: 1,
+			});
+			transport.sent.length = 0;
+
+			const escalating = client.escalate("jwt-token");
+			await vi.advanceTimersByTimeAsync(0);
+			transport.simulateMessage({ type: "auth_ack", data: { exp: 0 } });
+			await escalating;
+
+			// BTC is still granted → not in the delta → no re-subscribe.
+			expect(transport.sent.find((s) => JSON.parse(s).type === "subscribe")).toBeUndefined();
+
+			client.disconnect();
+		});
+
+		it("stores the JWT and sends nothing when escalate is called while disconnected", async () => {
+			const { client, transport } = createClient();
+			await client.escalate("jwt-token"); // not connected → deferred
+			expect(transport.sent.find((s) => JSON.parse(s).type === "auth")).toBeUndefined();
+
+			// The stored JWT is presented on the next connect.
+			client.connect();
+			expect(transport.token).toBe("jwt-token");
+			client.disconnect();
+		});
+
+		it("reactively refreshes on an unsolicited auth_error", async () => {
+			const { client, transport } = createClient({ getToken: async () => "refreshed" });
+			client.connect();
+			await vi.advanceTimersByTimeAsync(0);
+			transport.sent.length = 0;
+
+			// No refresh in flight → the auth_error is unsolicited → a reactive refresh fires.
+			transport.simulateMessage({
+				type: "auth_error",
+				data: { code: "token_expired", message: "expired" },
+			});
+			await vi.advanceTimersByTimeAsync(0);
+
+			const authMsg = transport.sent.find((s) => JSON.parse(s).type === "auth");
+			expect(authMsg).toBeDefined();
+			expect(JSON.parse(authMsg!).data.token).toBe("refreshed");
 
 			client.disconnect();
 		});

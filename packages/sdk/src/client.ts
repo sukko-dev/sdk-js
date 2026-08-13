@@ -1,4 +1,5 @@
 import { type Clock, SystemClock } from "./_clock";
+import { AuthManager } from "./auth";
 import { DeliveryQueue } from "./backpressure";
 import { CLIENT_ID_KEY, CLOSE_CODES, SUKKO_DEFAULTS } from "./constants";
 import { TypedEventEmitter } from "./emitter";
@@ -35,14 +36,14 @@ import type {
 } from "./messages";
 import type { ConnectionState, SukkoClientEvents, SukkoClientOptions } from "./options";
 import { type RecoveryAction, RecoveryEngine } from "./recovery";
+import { SubscriptionState } from "./subscriptions";
 import type { Transport } from "./transport";
 
+// The credential options (`token`/`getToken`) are owned by the AuthManager, not stored here; `clock`
+// and `transport` are held on dedicated fields. What remains are the resolved timing/reconnect knobs.
 type ResolvedOptions = Required<
 	Omit<SukkoClientOptions, "transport" | "token" | "getToken" | "clock">
-> & {
-	token: string;
-	getToken: SukkoClientOptions["getToken"];
-};
+>;
 
 /**
  * Sukko real-time client.
@@ -83,8 +84,12 @@ export class SukkoClient extends TypedEventEmitter<SukkoClientEvents> {
 	// Reconnection
 	private reconnectAttempt = 0;
 
-	// Subscriptions
-	private _subscriptions = new Set<string>();
+	// Subscriptions — desired-vs-granted state (FR-009). `desired` is what the caller asked for; the
+	// not-granted delta (desired minus granted) is what an api-key→JWT escalation re-subscribes.
+	private readonly _subscriptions = new SubscriptionState();
+
+	// Auth — the AuthManager owns the live credential and the single-flight refresh / escalation machinery.
+	private readonly auth: AuthManager;
 
 	// Delivery — a client-lifetime bounded queue drained by `messages()`; the event-emitter is the
 	// non-back-pressured pre-queue tap (§ plan: forced dual delivery surface).
@@ -126,7 +131,6 @@ export class SukkoClient extends TypedEventEmitter<SukkoClientEvents> {
 		this.transport = options.transport;
 		this.clock = options.clock ?? new SystemClock();
 		this.options = {
-			token: options.token ?? "",
 			reconnect: options.reconnect ?? true,
 			reconnectMaxAttempts: options.reconnectMaxAttempts ?? SUKKO_DEFAULTS.reconnectMaxAttempts,
 			backoffBaseMs: options.backoffBaseMs ?? SUKKO_DEFAULTS.backoffBaseMs,
@@ -136,8 +140,14 @@ export class SukkoClient extends TypedEventEmitter<SukkoClientEvents> {
 			staleConnectionThresholdMs:
 				options.staleConnectionThresholdMs ?? SUKKO_DEFAULTS.staleConnectionThresholdMs,
 			autoConnect: options.autoConnect ?? true,
-			getToken: options.getToken,
 		};
+
+		this.auth = new AuthManager({
+			token: options.token,
+			getToken: options.getToken,
+			send: (token) => this.send({ type: "auth", data: { token } }),
+			clock: this.clock,
+		});
 
 		this.deliveryQueue = new DeliveryQueue({
 			maxsize: SUKKO_DEFAULTS.bufferSize,
@@ -189,9 +199,9 @@ export class SukkoClient extends TypedEventEmitter<SukkoClientEvents> {
 		return this._state;
 	}
 
-	/** Active channel subscriptions. */
+	/** Active channel subscriptions — the desired set (what the caller asked for). */
 	get subscriptions(): ReadonlySet<string> {
-		return this._subscriptions;
+		return this._subscriptions.desiredChannels;
 	}
 
 	/**
@@ -258,7 +268,7 @@ export class SukkoClient extends TypedEventEmitter<SukkoClientEvents> {
 		this.shutdown = new AbortController();
 		this.teardownEpoch(); // abort any stale epoch before opening a fresh one
 		this.epoch = new AbortController();
-		this.transport.setToken(this.options.token);
+		this.transport.setToken(this.auth.currentToken ?? "");
 		this.transport.open();
 	}
 
@@ -290,7 +300,7 @@ export class SukkoClient extends TypedEventEmitter<SukkoClientEvents> {
 
 	/** Subscribe to one or more channels. */
 	subscribe(channels: string[]): void {
-		for (const ch of channels) this._subscriptions.add(ch);
+		this._subscriptions.addDesired(channels);
 
 		if (this.transport.state === "open") {
 			this.send({ type: "subscribe", data: { channels } });
@@ -299,10 +309,8 @@ export class SukkoClient extends TypedEventEmitter<SukkoClientEvents> {
 
 	/** Unsubscribe from one or more channels. */
 	unsubscribe(channels: string[]): void {
-		for (const ch of channels) {
-			this._subscriptions.delete(ch);
-			this.recovery.forget(ch);
-		}
+		this._subscriptions.remove(channels);
+		for (const ch of channels) this.recovery.forget(ch);
 
 		if (this.transport.state === "open") {
 			this.send({ type: "unsubscribe", data: { channels } });
@@ -364,49 +372,36 @@ export class SukkoClient extends TypedEventEmitter<SukkoClientEvents> {
 	// Public API — Token
 	// ---------------------------------------------------------------------------
 
-	/** Update the stored token (used for future connections). */
+	/** Set the credential for the next connection WITHOUT sending `auth` (offline; preserves grants). */
 	updateToken(token: string): void {
-		this.options.token = token;
+		this.auth.updateToken(token);
 	}
 
 	/**
-	 * Refresh the token mid-connection.
-	 * Calls the `getToken` callback, updates the stored token,
-	 * and sends an `auth` message to the server.
+	 * Refresh the token mid-connection (single-flight): send a fresh `auth` frame and await its ack.
+	 * Concurrent calls coalesce onto the same in-flight refresh. Rejects if the refresh is rejected or
+	 * the connection drops. Preserves subscriptions. Requires an open connection — offline, use
+	 * `updateToken()` and let the next reconnect present the token.
 	 */
 	async refreshToken(): Promise<void> {
-		if (!this.options.getToken) {
-			throw new Error("Cannot refresh token: no getToken callback configured");
+		if (this.transport.state !== "open") {
+			throw new NotConnectedError("cannot refresh token while disconnected");
 		}
-
-		const token = await this.options.getToken();
-		this.options.token = token;
-
-		if (this.transport.state === "open") {
-			this.send({ type: "auth", data: { token } });
-		}
+		await this.auth.refresh();
 	}
-
-	// ---------------------------------------------------------------------------
-	// Public API — Replay
-	// ---------------------------------------------------------------------------
 
 	/**
-	 * Manually re-issue the reconnect-replay on the current connection: resume from stored `pos` (Kafka),
-	 * or — once the client has connected at least once with no `pos` — probe with an empty `last_pos` to
-	 * elicit a Direct-backend `not_available` (FR-007). A no-op while disconnected or on a fresh session
-	 * with nothing to resume. Superseded by the automatic reconnect-replay in `handleTransportOpen`;
-	 * removed from the public surface by T033.
+	 * Escalate an api-key connection to a JWT: send the new token and, on success, re-subscribe the
+	 * channels the api-key was not granted (the not-granted delta, FR-009). While disconnected it stores
+	 * the JWT for the next connection. Distinct from `refreshToken()`, which preserves grants; escalation
+	 * never coalesces onto an in-flight refresh (it sends its own frame).
 	 */
-	reconnectWithReplay(): void {
-		if (this.transport.state !== "open") return;
-		const reconnect = this.recovery.buildReconnect();
-		if (reconnect) this.applyRecoveryActions([reconnect]);
-	}
-
-	/** Reset the reconnect attempt counter. */
-	resetReconnectAttempts(): void {
-		this.reconnectAttempt = 0;
+	async escalate(jwt: string): Promise<void> {
+		const escalated = await this.auth.escalate(jwt, this.transport.state === "open");
+		if (escalated) {
+			const delta = this._subscriptions.notGranted();
+			if (delta.length > 0) this.send({ type: "subscribe", data: { channels: delta } });
+		}
 	}
 
 	// ---------------------------------------------------------------------------
@@ -451,12 +446,11 @@ export class SukkoClient extends TypedEventEmitter<SukkoClientEvents> {
 		this.recovery.markConnected();
 		if (reconnect) this.applyRecoveryActions([reconnect]);
 
-		// Restore subscriptions (live flow resumes independently of the pos-replay above).
-		if (this._subscriptions.size > 0) {
-			this.send({
-				type: "subscribe",
-				data: { channels: Array.from(this._subscriptions) },
-			});
+		// Restore subscriptions (live flow resumes independently of the pos-replay above) — the full
+		// desired set; grants were cleared on disconnect so the server re-grants against the new epoch.
+		const desired = Array.from(this._subscriptions.desiredChannels);
+		if (desired.length > 0) {
+			this.send({ type: "subscribe", data: { channels: desired } });
 		}
 	}
 
@@ -509,7 +503,7 @@ export class SukkoClient extends TypedEventEmitter<SukkoClientEvents> {
 	}
 
 	private forceReconnect(): void {
-		this.resetReconnectAttempts();
+		this.reconnectAttempt = 0;
 		this.onConnectionLost(); // the transport closes with no echo here — flush recovery state directly
 		this.transport.close();
 		this.connect(); // teardownEpoch + fresh epoch handled inside connect()
@@ -589,12 +583,21 @@ export class SukkoClient extends TypedEventEmitter<SukkoClientEvents> {
 					this.emit("historyError", err);
 					break;
 				}
-				case "subscription_ack":
-					this.emit("subscriptionAck", raw as unknown as SubscriptionAck);
+				case "subscription_ack": {
+					const ack = raw as unknown as SubscriptionAck;
+					this._subscriptions.markGranted(ack.subscribed); // the server granted these
+					this.emit("subscriptionAck", ack);
 					break;
-				case "unsubscription_ack":
-					this.emit("unsubscriptionAck", raw as unknown as UnsubscriptionAck);
+				}
+				case "unsubscription_ack": {
+					// A `forced` unsubscription (auth/permission change) drops the grant but KEEPS the channel
+					// desired, so a later escalation re-subscribes it via the not-granted delta. A caller-
+					// initiated unsubscribe already dropped it from both sets in `unsubscribe()`.
+					const ack = raw as unknown as UnsubscriptionAck;
+					if (ack.forced === true) this._subscriptions.markForcedUngranted(ack.unsubscribed);
+					this.emit("unsubscriptionAck", ack);
 					break;
+				}
 				case "publish_ack":
 					this.emit("publishAck", raw as unknown as PublishAck);
 					break;
@@ -611,7 +614,7 @@ export class SukkoClient extends TypedEventEmitter<SukkoClientEvents> {
 					const err = raw as unknown as ReconnectError;
 					if (err.code === "not_available") {
 						this.applyRecoveryActions(
-							this.recovery.handleNotAvailable(Array.from(this._subscriptions)),
+							this.recovery.handleNotAvailable(Array.from(this._subscriptions.desiredChannels)),
 						);
 						this.wakeRecovery();
 					} else {
@@ -641,12 +644,23 @@ export class SukkoClient extends TypedEventEmitter<SukkoClientEvents> {
 				case "unsubscribe_error":
 					this.emit("unsubscribeError", raw as unknown as UnsubscribeError);
 					break;
-				case "auth_ack":
-					this.emit("authAck", raw as unknown as AuthAck);
+				case "auth_ack": {
+					// Resolve any in-flight refresh, reset backoff, and (re)arm the proactive timer from exp.
+					const ack = raw as unknown as AuthAck;
+					this.auth.onAuthAck(ack.data.exp);
+					this.emit("authAck", ack);
 					break;
-				case "auth_error":
-					this.emit("authError", raw as unknown as AuthError);
+				}
+				case "auth_error": {
+					// An UNSOLICITED auth_error (no refresh in flight) triggers a reactive refresh; one that
+					// resolves our own in-flight refresh must NOT loop (the AuthManager returns false then).
+					const err = raw as unknown as AuthError;
+					if (this.auth.onAuthError(err.data.code, err.data.message)) {
+						void this.auth.reactiveRefresh();
+					}
+					this.emit("authError", err);
 					break;
+				}
 				default:
 					// Unknown/future message type — drop and continue for forward-compatibility (FR-025);
 					// never kill the read-pump.
@@ -732,11 +746,14 @@ export class SukkoClient extends TypedEventEmitter<SukkoClientEvents> {
 	/**
 	 * A connection dropped. Any channel mid-recovery is a truncated recovery → RecoveryInterrupted
 	 * (advisory; the next reconnect-replay may still recover it). `pos` and `client_id` persist for that
-	 * reconnect-replay. Called from every connection-loss path (close, heartbeat timeout, forced
-	 * reconnect, intentional disconnect).
+	 * reconnect-replay. Auth's pending refresh is failed and its proactive timer cancelled, and granted
+	 * subscription state is cleared (desired persists) so the next epoch re-grants from scratch. Called
+	 * from every connection-loss path (close, heartbeat timeout, forced reconnect, intentional disconnect).
 	 */
 	private onConnectionLost(): void {
 		this.applyRecoveryActions(this.recovery.handleDisconnect());
+		this.auth.close();
+		this._subscriptions.clearGranted();
 	}
 
 	/** Wake the recovery timer so it recomputes its next deadline after the engine's state changed. */
