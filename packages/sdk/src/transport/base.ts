@@ -1,5 +1,8 @@
 // ---------------------------------------------------------------------------
-// Transport abstraction — contract for WebSocket, SSE, Web Push transports
+// Transport abstraction — the contract every connection adapter implements.
+// Reconnection, heartbeat, recovery, auth, and subscription tracking live in
+// `SukkoClient`, NOT here. A transport only opens/closes a connection, sends and
+// receives raw strings, emits lifecycle events, and declares its capabilities.
 // ---------------------------------------------------------------------------
 
 /**
@@ -11,13 +14,18 @@
 export type TransportState = "closed" | "opening" | "open";
 
 /**
- * Declares what the transport supports.
- * WebSocket: all true. SSE: canSend via HTTP fallback. Web Push: receive-only.
+ * What the transport supports. Drives the client's behaviour explicitly (§XV — no runtime sniffing):
+ * - `canSend` — has a client→server channel (WS yes; SSE no — publish/subscribe go via REST/reconnect).
+ * - `canSubscribe`/`canPublish` — in-band subscribe/publish over this transport.
+ * - `canPauseReceive` — the transport can apply real receive back-pressure via `pause()`/`resume()`.
+ *   WHATWG `WebSocket` (browser + Node global) auto-drains → `false`; a `ws`-npm Node transport →
+ *   `true`. When `false`, the delivery queue applies its overflow policy instead (FR-003).
  */
 export interface TransportCapabilities {
 	canSend: boolean;
 	canSubscribe: boolean;
 	canPublish: boolean;
+	canPauseReceive: boolean;
 }
 
 /** Event map for transport lifecycle events. */
@@ -29,16 +37,8 @@ export type TransportEvents = {
 };
 
 /**
- * Transport interface — thin wrapper around a raw connection.
- *
- * Reconnection, heartbeat, and subscription tracking live in `SukkoClient`,
- * NOT in the transport. The transport is responsible only for:
- * - Opening/closing the underlying connection
- * - Sending and receiving raw string data
- * - Emitting lifecycle events (open, close, message, error)
- *
- * Transports MUST support reuse: after `close()`, calling `open()` again
- * should create a fresh underlying connection.
+ * Transport interface — a thin wrapper around a raw connection. Transports MUST support reuse: after
+ * `close()`, calling `open()` again creates a fresh underlying connection.
  */
 export interface Transport {
 	/** Open the connection. */
@@ -49,6 +49,13 @@ export interface Transport {
 	send(data: string): void;
 	/** Update the token used for the next connection. */
 	setToken(token: string): void;
+	/**
+	 * Pause receiving (real back-pressure). No-op on transports where `canPauseReceive` is `false`.
+	 * The client calls this when the delivery queue fills.
+	 */
+	pause(): void;
+	/** Resume receiving after a `pause()`. No-op when `canPauseReceive` is `false`. */
+	resume(): void;
 	/** Current connection state. */
 	readonly state: TransportState;
 	/** Declared capabilities of this transport. */

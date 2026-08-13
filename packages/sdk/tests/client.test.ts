@@ -23,7 +23,7 @@ class MockTransport extends TypedEventEmitter<TransportEvents> implements Transp
 	}
 
 	get capabilities(): TransportCapabilities {
-		return { canSend: true, canSubscribe: true, canPublish: true };
+		return { canSend: true, canSubscribe: true, canPublish: true, canPauseReceive: false };
 	}
 
 	/** Exposes the stored token for test assertions. */
@@ -34,6 +34,10 @@ class MockTransport extends TypedEventEmitter<TransportEvents> implements Transp
 	setToken(token: string): void {
 		this._token = token;
 	}
+
+	pause(): void {}
+
+	resume(): void {}
 
 	open(): void {
 		this._state = "opening";
@@ -563,24 +567,87 @@ describe("SukkoClient", () => {
 			expect(client.state).toBe("disconnected");
 		});
 
-		it("does not reconnect on going_away close", async () => {
+		it("reconnects on going_away (1001) — transient per FR-019", async () => {
+			const transport = new MockTransport();
+			const client = new SukkoClient({ transport, autoConnect: true, reconnect: true });
+			await vi.advanceTimersByTimeAsync(0);
+
+			transport.simulateClose(CLOSE_CODES.GOING_AWAY);
+			expect(client.state).toBe("reconnecting");
+			client.disconnect();
+		});
+
+		it("reconnects on internal_error (1011) but is terminal on policy_violation (1008)", async () => {
+			const t1 = new MockTransport();
+			const c1 = new SukkoClient({ transport: t1, autoConnect: true, reconnect: true });
+			await vi.advanceTimersByTimeAsync(0);
+			t1.simulateClose(CLOSE_CODES.INTERNAL_ERROR);
+			expect(c1.state).toBe("reconnecting"); // 1011 transient
+			c1.disconnect();
+
+			const t2 = new MockTransport();
+			const c2 = new SukkoClient({ transport: t2, autoConnect: true, reconnect: true });
+			await vi.advanceTimersByTimeAsync(0);
+			t2.simulateClose(CLOSE_CODES.POLICY_VIOLATION);
+			expect(c2.state).toBe("disconnected"); // 1008 terminal
+		});
+
+		it("is terminal on a REMOTE 4000 (operator force_disconnect), no reconnect", async () => {
 			const transport = new MockTransport();
 			const openSpy = vi.spyOn(transport, "open");
+			const client = new SukkoClient({ transport, autoConnect: true, reconnect: true });
+			await vi.advanceTimersByTimeAsync(0);
+			openSpy.mockClear();
 
+			transport.simulateClose(CLOSE_CODES.FORCE_DISCONNECT, "force disconnect"); // no local code → remote
+			await vi.advanceTimersByTimeAsync(5000);
+			expect(openSpy).not.toHaveBeenCalled();
+			expect(client.state).toBe("disconnected");
+		});
+
+		it("resets the close-direction latch across epochs so a stranded local 4000 can't mask a remote force_disconnect", async () => {
+			const transport = new MockTransport();
 			const client = new SukkoClient({
 				transport,
 				autoConnect: true,
 				reconnect: true,
+				heartbeatInterval: 100,
+				heartbeatTimeout: 50,
 			});
-
+			await vi.advanceTimersByTimeAsync(0);
+			// Latch localCloseCode=4000 via the heartbeat pong-timeout (the mock's close emits nothing,
+			// so handleTransportClose never consumes the latch).
+			await vi.advanceTimersByTimeAsync(160);
+			// Tear down and start a fresh epoch — connect() must clear the stranded latch.
+			client.disconnect();
+			const openSpy = vi.spyOn(transport, "open");
+			client.connect();
 			await vi.advanceTimersByTimeAsync(0);
 			openSpy.mockClear();
-
-			transport.simulateClose(CLOSE_CODES.GOING_AWAY);
-
+			// A genuine REMOTE force_disconnect must stay terminal, not be mis-read as the stale latch.
+			transport.simulateClose(CLOSE_CODES.FORCE_DISCONNECT, "force disconnect");
 			await vi.advanceTimersByTimeAsync(5000);
 			expect(openSpy).not.toHaveBeenCalled();
 			expect(client.state).toBe("disconnected");
+		});
+
+		it("reconnects on a LOCAL 4000 (heartbeat timeout)", async () => {
+			const transport = new MockTransport();
+			const client = new SukkoClient({
+				transport,
+				autoConnect: true,
+				reconnect: true,
+				heartbeatInterval: 100,
+				heartbeatTimeout: 50,
+			});
+			await vi.advanceTimersByTimeAsync(0);
+
+			// Fire a heartbeat then let its pong window elapse — the client sets localCloseCode=4000 and
+			// closes. The real transport would emit close(4000); the mock doesn't, so we fire it.
+			await vi.advanceTimersByTimeAsync(160);
+			transport.simulateClose(CLOSE_CODES.HEARTBEAT_TIMEOUT, "Heartbeat timeout");
+			expect(client.state).toBe("reconnecting"); // local 4000 → reconnect
+			client.disconnect();
 		});
 
 		it("does not reconnect when reconnect is disabled", async () => {

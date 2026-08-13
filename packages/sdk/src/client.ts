@@ -1,5 +1,14 @@
-import { CLIENT_ID_KEY, CLOSE_CODES, SUKKO_DEFAULTS } from "./constants";
+import { DeliveryQueue } from "./backpressure";
+import {
+	CLIENT_ID_KEY,
+	CLOSE_CODES,
+	type CloseDirection,
+	SUKKO_DEFAULTS,
+	isForceDisconnect,
+	isHeartbeatTimeout,
+} from "./constants";
 import { TypedEventEmitter } from "./emitter";
+import type { DeliveryItem, Message } from "./messages";
 import type { Transport } from "./transport";
 import type {
 	AuthAckMessage,
@@ -29,9 +38,11 @@ type ResolvedOptions = Required<Omit<SukkoClientOptions, "transport" | "token" |
 /**
  * Sukko real-time client.
  *
- * Framework-agnostic, transport-agnostic client implementing the full Sukko
- * protocol: subscribe, unsubscribe, publish, heartbeat, reconnection with
- * replay, and mid-connection auth refresh.
+ * Framework-agnostic, transport-agnostic client: subscribe, unsubscribe, publish, heartbeat,
+ * reconnection (re-subscribes on reconnect), a back-pressured `messages()` delivery stream, and
+ * manual token refresh. NOTE: automatic reconnect currently re-subscribes only — gap replay is a
+ * manual `reconnectWithReplay()` call, not yet wired into auto-reconnect (§I Known Gap; the recovery
+ * engine + supervisor land in the T026 rewrite).
  *
  * The transport layer (WebSocket, SSE, Web Push, etc.) is injected via the `transport`
  * option, keeping this client decoupled from any specific transport.
@@ -63,8 +74,19 @@ export class SukkoClient extends TypedEventEmitter<SukkoClientEvents> {
 	// Reconnection
 	private reconnectAttempt = 0;
 
+	// The close code the CLIENT last initiated (e.g. a heartbeat-timeout 4000), so a close event can
+	// be attributed local vs remote — 4000 means heartbeat-timeout (local, reconnect) or
+	// force_disconnect (remote, terminal) depending on direction (FR-019).
+	private localCloseCode: number | null = null;
+
 	// Subscriptions
 	private _subscriptions = new Set<string>();
+
+	// Delivery — a client-lifetime bounded queue drained by `messages()`; the event-emitter is the
+	// non-back-pressured pre-queue tap (§ plan: forced dual delivery surface).
+	private readonly deliveryQueue: DeliveryQueue;
+	private queueConsumer = false;
+	private transportPaused = false;
 
 	// Replay state
 	private clientId: string;
@@ -87,16 +109,22 @@ export class SukkoClient extends TypedEventEmitter<SukkoClientEvents> {
 		this.options = {
 			token: options.token ?? "",
 			reconnect: options.reconnect ?? true,
-			reconnectAttempts: options.reconnectAttempts ?? SUKKO_DEFAULTS.RECONNECT_ATTEMPTS,
-			reconnectDelayBase: options.reconnectDelayBase ?? SUKKO_DEFAULTS.RECONNECT_DELAY_BASE,
-			reconnectDelayMax: options.reconnectDelayMax ?? SUKKO_DEFAULTS.RECONNECT_DELAY_MAX,
-			heartbeatInterval: options.heartbeatInterval ?? SUKKO_DEFAULTS.HEARTBEAT_INTERVAL,
-			heartbeatTimeout: options.heartbeatTimeout ?? SUKKO_DEFAULTS.HEARTBEAT_TIMEOUT,
+			reconnectAttempts: options.reconnectAttempts ?? SUKKO_DEFAULTS.reconnectMaxAttempts,
+			reconnectDelayBase: options.reconnectDelayBase ?? SUKKO_DEFAULTS.backoffBaseMs,
+			reconnectDelayMax: options.reconnectDelayMax ?? SUKKO_DEFAULTS.backoffMaxMs,
+			heartbeatInterval: options.heartbeatInterval ?? SUKKO_DEFAULTS.heartbeatIntervalMs,
+			heartbeatTimeout: options.heartbeatTimeout ?? SUKKO_DEFAULTS.pongTimeoutMs,
 			staleConnectionThreshold:
-				options.staleConnectionThreshold ?? SUKKO_DEFAULTS.STALE_CONNECTION_THRESHOLD,
+				options.staleConnectionThreshold ?? SUKKO_DEFAULTS.staleConnectionThresholdMs,
 			autoConnect: options.autoConnect ?? true,
 			getToken: options.getToken,
 		};
+
+		this.deliveryQueue = new DeliveryQueue({
+			maxsize: SUKKO_DEFAULTS.bufferSize,
+			policy: SUKKO_DEFAULTS.overflowPolicy,
+			floor: SUKKO_DEFAULTS.historyLimit + SUKKO_DEFAULTS.maxReplayMessages,
+		});
 
 		this.clientId = this.loadOrCreateClientId();
 		this.setupTransportListeners();
@@ -146,10 +174,66 @@ export class SukkoClient extends TypedEventEmitter<SukkoClientEvents> {
 		return this._subscriptions;
 	}
 
+	/**
+	 * Async iterator over the delivery stream — live and replayed messages, gap signals, and overflow
+	 * markers (`DeliveryItem`). This is the **authoritative, back-pressured** surface: on a capable
+	 * transport, a slow consumer here pauses receiving; on an incapable transport the queue applies its
+	 * overflow policy. **Single-consumer** — do not iterate concurrently. The stream ends when the
+	 * client disconnects. The `.on("message", …)` event surface remains as a non-back-pressured tap.
+	 */
+	async *messages(): AsyncGenerator<DeliveryItem> {
+		// Reject a second concurrent iterator BEFORE claiming ownership — otherwise its teardown would
+		// clear the first (legitimate) consumer's back-pressure flag, silently disabling pause/resume.
+		if (this.queueConsumer) {
+			throw new Error("messages() is single-consumer — only one iterator may be active at a time");
+		}
+		this.queueConsumer = true;
+		try {
+			for (;;) {
+				const result = await this.deliveryQueue.next();
+				if (result.done) return;
+				// Resume a paused capable transport as soon as the consumer has drained below capacity.
+				if (this.transportPaused && !this.deliveryQueue.isFull) {
+					this.transport.resume();
+					this.transportPaused = false;
+				}
+				yield result.value;
+			}
+		} finally {
+			this.queueConsumer = false;
+			if (this.transportPaused) {
+				this.transport.resume();
+				this.transportPaused = false;
+			}
+		}
+	}
+
+	/**
+	 * Push a delivery item onto the queue and, when an active `messages()` consumer is present on a
+	 * capable transport, pause receiving once the buffer is full (real back-pressure). With no active
+	 * iterator consumer the queue simply applies its overflow policy — the emitter tap is never stalled.
+	 */
+	private enqueue(item: DeliveryItem): void {
+		this.deliveryQueue.push(item);
+		if (
+			this.queueConsumer &&
+			this.transport.capabilities.canPauseReceive &&
+			this.deliveryQueue.isFull &&
+			!this.transportPaused
+		) {
+			this.transport.pause();
+			this.transportPaused = true;
+		}
+	}
+
 	/** Connect to the server via the transport. */
 	connect(): void {
 		if (this.transport.state === "opening" || this.transport.state === "open") return;
 
+		// Reset the close-direction latch at the epoch boundary so a heartbeat-timeout 4000 set in a
+		// prior epoch (but never consumed by handleTransportClose, e.g. after disconnect()) can't
+		// mis-attribute a later REMOTE force_disconnect 4000 as local (FR-019 safety).
+		this.localCloseCode = null;
 		this.setState("connecting");
 		this.clearTimers();
 		this.transport.setToken(this.options.token);
@@ -168,6 +252,12 @@ export class SukkoClient extends TypedEventEmitter<SukkoClientEvents> {
 
 		this.setState("disconnected");
 		this.emit("close", CLOSE_CODES.NORMAL, "Client disconnect");
+
+		// Release any parked messages() consumer — client-lifetime queue ends on disconnect (§XI teardown).
+		// NOTE: the queue is not revived by a later connect() in this phase; the full connect/disconnect/
+		// close vs reconnect-epoch lifecycle (queue survival across epochs) is defined by the T026
+		// supervisor rewrite. Automatic reconnect (handleTransportClose) deliberately does NOT close it.
+		this.deliveryQueue.close();
 	}
 
 	// ---------------------------------------------------------------------------
@@ -304,18 +394,31 @@ export class SukkoClient extends TypedEventEmitter<SukkoClientEvents> {
 		this.stopHeartbeat();
 		this.emit("close", code, reason);
 
-		switch (code) {
-			case CLOSE_CODES.NORMAL:
-			case CLOSE_CODES.GOING_AWAY:
-				this.setState("disconnected");
-				return;
-			default:
-				if (this.options.reconnect) {
-					this.handleReconnect();
-				} else {
-					this.setState("disconnected");
-				}
+		// Attribute the close: a 4000 the client itself initiated (heartbeat timeout) is `local`;
+		// otherwise it is `remote` (an operator force_disconnect).
+		const localCode = this.localCloseCode;
+		this.localCloseCode = null;
+		const direction: CloseDirection = localCode === code ? "local" : "remote";
+
+		// Per-close-code reconnect policy (FR-019).
+		if (isHeartbeatTimeout(code, direction)) {
+			// Local 4000 — our own heartbeat timeout fired; the connection is dead → reconnect.
+			this.handleReconnect();
+			return;
 		}
+		if (
+			isForceDisconnect(code, direction) || // remote 4000 operator force-disconnect — terminal
+			code === CLOSE_CODES.NORMAL || // 1000 clean shutdown
+			code === CLOSE_CODES.POLICY_VIOLATION // 1008 policy violation — not transient
+		) {
+			// TODO(T026): 1008 and remote-4000 should also surface a TYPED error on the error channel
+			// (FR-019 / Scenario 6 AC2). Deferred to the supervisor rewrite that builds that channel —
+			// until then the terminal cause is observable via the `close` event's code (emitted above).
+			this.setState("disconnected");
+			return;
+		}
+		// 1001 going-away, 1011 internal-error, 1006/abnormal, unknown → transient, reconnect with backoff.
+		this.handleReconnect();
 	}
 
 	private handleTransportError(): void {
@@ -365,7 +468,8 @@ export class SukkoClient extends TypedEventEmitter<SukkoClientEvents> {
 					if (msg.pos) {
 						this.lastPos.set(msg.channel, msg.pos);
 					}
-					this.emit("message", msg);
+					this.emit("message", msg); // pre-queue tap (multicast, non-back-pressured)
+					this.enqueue(raw as unknown as Message); // authoritative delivery stream
 					break;
 				}
 				case "subscription_ack":
@@ -404,9 +508,13 @@ export class SukkoClient extends TypedEventEmitter<SukkoClientEvents> {
 				case "auth_error":
 					this.emit("authError", raw as unknown as AuthErrorMessage);
 					break;
+				default:
+					// Unknown/future message type — drop and continue for forward-compatibility (FR-025);
+					// never kill the read-pump.
+					break;
 			}
 		} catch {
-			// Silently ignore unparseable messages
+			// Malformed (non-JSON) frame — drop and continue; the read-pump must survive it (FR-025).
 		}
 	}
 
@@ -415,26 +523,29 @@ export class SukkoClient extends TypedEventEmitter<SukkoClientEvents> {
 	// ---------------------------------------------------------------------------
 
 	private handleReconnect(): void {
-		if (!this.options.reconnect) return;
-
-		if (this.reconnectAttempt >= this.options.reconnectAttempts) {
-			// Phase 2: indefinite retry at max delay
-			this.setState("error");
-			this.emit("reconnecting", this.reconnectAttempt);
-
-			const delay = this.options.reconnectDelayMax + Math.random() * 1000;
-			this.reconnectTimer = setTimeout(() => this.connect(), delay);
+		if (!this.options.reconnect) {
+			this.setState("disconnected");
 			return;
 		}
 
-		// Phase 1: exponential backoff with jitter
+		// `reconnectAttempts === 0` means unlimited; otherwise, once attempts are exhausted the client
+		// gives up and enters the terminal `error` state — no indefinite retry (FR-018/FR-026).
+		const unlimited = this.options.reconnectAttempts === 0;
+		if (!unlimited && this.reconnectAttempt >= this.options.reconnectAttempts) {
+			this.setState("error");
+			return;
+		}
+
 		this.setState("reconnecting");
 		this.reconnectAttempt++;
 
-		const delay = Math.min(
-			this.options.reconnectDelayBase * 2 ** (this.reconnectAttempt - 1) + Math.random() * 1000,
+		// Full Jitter (AWS): delay = random(0, min(cap, base * 2^(attempt-1))). Jitter is the whole
+		// point — pure exponential without it causes lock-step reconnect storms.
+		const ceiling = Math.min(
 			this.options.reconnectDelayMax,
+			this.options.reconnectDelayBase * 2 ** (this.reconnectAttempt - 1),
 		);
+		const delay = Math.random() * ceiling;
 
 		this.emit("reconnecting", this.reconnectAttempt);
 		this.reconnectTimer = setTimeout(() => this.connect(), delay);
@@ -452,6 +563,7 @@ export class SukkoClient extends TypedEventEmitter<SukkoClientEvents> {
 				this.send({ type: "heartbeat", data: {} as Record<string, never> });
 
 				this.pongTimeout = setTimeout(() => {
+					this.localCloseCode = CLOSE_CODES.HEARTBEAT_TIMEOUT; // local 4000 → reconnect (FR-019)
 					this.transport.close(CLOSE_CODES.HEARTBEAT_TIMEOUT, "Heartbeat timeout");
 				}, this.options.heartbeatTimeout);
 			}

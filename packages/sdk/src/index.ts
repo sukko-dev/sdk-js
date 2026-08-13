@@ -47,6 +47,18 @@ export type {
 	UnsubscriptionAckMessage,
 } from "./types";
 
+// Delivery-stream types — what `client.messages()` yields (the authoritative, back-pressured
+// surface). Distinct from the `./types` protocol types above, which back the `.on("message")` tap;
+// the two message models coexist transitionally until the T009b switch to `./messages`.
+export type {
+	DeliveryItem,
+	Message,
+	ReplayMessage,
+	Gap,
+	PossibleGap,
+	Overflow,
+} from "./messages";
+
 // Constants
 export { CLOSE_CODES, CLIENT_ID_KEY, SUKKO_DEFAULTS } from "./constants";
 

@@ -63,11 +63,22 @@ export class WebSocketTransport extends TypedEventEmitter<TransportEvents> imple
 	}
 
 	get capabilities(): TransportCapabilities {
-		return { canSend: true, canSubscribe: true, canPublish: true };
+		// The WHATWG WebSocket (browser + Node global) auto-drains inbound frames and exposes no read
+		// pause, so canPauseReceive is false — back-pressure falls to the delivery queue's overflow
+		// policy. A `ws`-npm-backed Node transport (@sukko/websocket-node) sets this true.
+		return { canSend: true, canSubscribe: true, canPublish: true, canPauseReceive: false };
 	}
 
 	setToken(token: string): void {
 		this.token = token;
+	}
+
+	pause(): void {
+		// No-op — the WHATWG WebSocket cannot pause receiving (canPauseReceive: false).
+	}
+
+	resume(): void {
+		// No-op — see pause().
 	}
 
 	open(): void {

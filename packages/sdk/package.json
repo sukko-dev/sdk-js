@@ -27,11 +27,13 @@
 	"scripts": {
 		"build": "tsup",
 		"test": "vitest run",
-		"test:watch": "vitest"
+		"test:watch": "vitest",
+		"typecheck": "tsc --noEmit"
 	},
 	"devDependencies": {
 		"tsup": "^8",
 		"typescript": "^5.5",
-		"vitest": "^3"
+		"vitest": "^3",
+		"yaml": "^2"
 	}
 }
