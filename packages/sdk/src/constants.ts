@@ -1,6 +1,6 @@
 /**
  * Default configuration values for SukkoClient. Keys are camelCase, in **milliseconds** (the Defaults
- * & Units table's canonical unit). The SSE (`sseIdleTimeoutMs`) knob is added when that phase lands.
+ * & Units table's canonical unit).
  */
 export const SUKKO_DEFAULTS = {
 	reconnectMaxAttempts: 5, // 0 = unlimited
@@ -27,6 +27,9 @@ export const SUKKO_DEFAULTS = {
 	authRefreshFloorMs: 30000,
 	authRefreshLeadMs: 30000,
 	authRefreshBackoffMaxMs: 300000,
+	// SSE (T036). sseIdleTimeoutMs = max silence (no bytes, incl. `: keepalive` comments) before the
+	// stream is treated as dead and dropped — the sole SSE liveness detector (no heartbeat over SSE).
+	sseIdleTimeoutMs: 90000,
 } as const;
 
 /** WebSocket close codes used by the Sukko protocol. */

@@ -1,8 +1,10 @@
-// Transport module barrel. Importers use `./transport`; concrete transports live in sibling files
-// (`websocket.ts` (WHATWG), `sse.ts`) and are added in later phases.
+// Transport module barrel. Importers use `./transport`; the `Transport` interface lives in `base.ts`,
+// concrete transports in sibling files (SSE here; the WebSocket adapter ships as `@sukko/websocket`).
 export type {
 	Transport,
 	TransportCapabilities,
 	TransportEvents,
 	TransportState,
 } from "./base";
+export { SseTransport } from "./sse";
+export type { FetchLike, SseTransportOptions } from "./sse";

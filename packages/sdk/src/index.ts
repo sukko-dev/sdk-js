@@ -5,13 +5,17 @@ export { SukkoClient } from "./client";
 export { TypedEventEmitter } from "./emitter";
 export type { EventMap } from "./emitter";
 
-// Transport abstraction
+// Transport abstraction + the built-in SSE transport (receive-only; the WebSocket adapter is
+// `@sukko/websocket`).
 export type {
 	Transport,
 	TransportCapabilities,
 	TransportEvents,
 	TransportState,
+	FetchLike,
+	SseTransportOptions,
 } from "./transport";
+export { SseTransport } from "./transport";
 
 // Client configuration + event surface
 export type { ConnectionState, SukkoClientEvents, SukkoClientOptions } from "./options";
