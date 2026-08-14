@@ -50,6 +50,14 @@ export interface Transport {
 	/** Update the token used for the next connection. */
 	setToken(token: string): void;
 	/**
+	 * Set the channel set applied at the next `open()`. The mirror of `setToken()` for transports whose
+	 * subscriptions are connect-time (`canSubscribe: false` — SSE bakes them into the request URL). A
+	 * no-op on transports that subscribe in-band (`canSubscribe: true` — WebSocket sends `subscribe`
+	 * frames), which the client drives instead. The client calls this before (re)opening a receive-only
+	 * transport so a reconnect resumes the current desired set.
+	 */
+	setChannels(channels: string[]): void;
+	/**
 	 * Pause receiving (real back-pressure). No-op on transports where `canPauseReceive` is `false`.
 	 * The client calls this when the delivery queue fills.
 	 */

@@ -46,6 +46,8 @@ class MockTransport extends TypedEventEmitter<TransportEvents> implements Transp
 		this._token = token;
 	}
 
+	setChannels(_channels: string[]): void {} // canSubscribe: true → in-band subscribe, no-op
+
 	pause(): void {}
 
 	resume(): void {}

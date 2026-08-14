@@ -57,7 +57,7 @@ const MAX_FRAME_CHARS = 1_048_576;
  */
 export class SseTransport extends TypedEventEmitter<TransportEvents> implements Transport {
 	private readonly baseUrl: string;
-	private readonly channels: string[];
+	private channels: string[]; // connect-time subscribe set; the client updates it via setChannels()
 	private token: string;
 	private readonly clock: Clock;
 	private readonly fetchImpl: FetchLike;
@@ -110,6 +110,12 @@ export class SseTransport extends TypedEventEmitter<TransportEvents> implements 
 
 	setToken(token: string): void {
 		this.token = token;
+	}
+
+	/** Replace the connect-time channel set applied at the next `open()`. The client calls this before a
+	 * reconnect when `subscribe`/`unsubscribe` changed the desired set (SSE has no in-band subscribe). */
+	setChannels(channels: string[]): void {
+		this.channels = [...channels];
 	}
 
 	/** Receive-only — publish goes via REST, (un)subscribe is connect-time. No-op (`canSend: false`). */

@@ -74,6 +74,11 @@ export class WebSocketTransport extends TypedEventEmitter<TransportEvents> imple
 		this.token = token;
 	}
 
+	setChannels(_channels: string[]): void {
+		// No-op — WebSocket subscribes in-band via `subscribe` frames (canSubscribe: true). The client
+		// drives subscriptions directly; connect-time channels are an SSE-only concern.
+	}
+
 	pause(): void {
 		// No-op — the WHATWG WebSocket cannot pause receiving (canPauseReceive: false).
 	}

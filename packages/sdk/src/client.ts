@@ -5,10 +5,16 @@ import { CLIENT_ID_KEY, CLOSE_CODES, SUKKO_DEFAULTS } from "./constants";
 import { TypedEventEmitter } from "./emitter";
 import {
 	ConfigurationError,
+	EditionRequiredError,
+	ForbiddenError,
 	NotConnectedError,
+	PayloadTooLargeError,
 	REPLAY_ERROR_CODES,
+	RateLimitedError,
 	RecoveryInterruptedError,
+	ServiceUnavailableError,
 	TransportError,
+	ValidationError,
 } from "./errors";
 import { HeartbeatMonitor } from "./heartbeat";
 import { HttpApi, httpBaseFromWs } from "./http";
@@ -85,6 +91,13 @@ export class SukkoClient extends TypedEventEmitter<SukkoClientEvents> {
 
 	// Reconnection
 	private reconnectAttempt = 0;
+	// Whether the transport has opened at least once — gates the SSE reopen PossibleGap (first open is a
+	// fresh subscription with nothing to have missed; a reopen cannot confirm live replay).
+	private hasConnectedBefore = false;
+	// Set by an explicit disconnect() (which also closes the client-lifetime delivery queue). Gates the
+	// SSE subscribe()-reopen so a subscribe after a deliberate disconnect records intent without opening a
+	// stream into a dead queue; a closeStream() (unsubscribe-all) leaves this false so subscribe() reopens.
+	private userDisconnected = false;
 
 	// Subscriptions — desired-vs-granted state (FR-009). `desired` is what the caller asked for; the
 	// not-granted delta (desired minus granted) is what an api-key→JWT escalation re-subscribes.
@@ -287,6 +300,18 @@ export class SukkoClient extends TypedEventEmitter<SukkoClientEvents> {
 	connect(): void {
 		if (this.transport.state === "opening" || this.transport.state === "open") return;
 
+		// A connect-time-subscribe transport (SSE, `canSubscribe: false`) carries its channel set in the
+		// request URL, so with nothing subscribed there is nothing to open — connecting is a benign no-op
+		// that resolves once `subscribe()` runs (which drives the open on such a transport). This is NOT a
+		// throw on purpose: `connect()` is invoked fire-and-forget from the online/visibility listeners and
+		// the backoff reconnect, where a thrown config error would escape uncaught (§XI, no silent failure —
+		// idle-until-subscribed is an explicit, documented state, not a swallowed error).
+		const connectTimeChannels = !this.transport.capabilities.canSubscribe;
+		if (connectTimeChannels && this._subscriptions.desiredChannels.size === 0) {
+			return;
+		}
+
+		this.userDisconnected = false;
 		this.setState("connecting");
 		// Cancel any pending reconnect backoff and open a fresh cancellation scope for this connection —
 		// any "start a connection" path (connect / forceReconnect / a reconnect firing) supersedes an
@@ -296,11 +321,18 @@ export class SukkoClient extends TypedEventEmitter<SukkoClientEvents> {
 		this.teardownEpoch(); // abort any stale epoch before opening a fresh one
 		this.epoch = new AbortController();
 		this.transport.setToken(this.auth.currentToken ?? "");
+		// Feed the current desired set in before opening (the mirror of setToken; §XV: the desired set is
+		// the single source of truth, so a reconnect resumes exactly what is wanted). WebSocket no-ops
+		// setChannels and subscribes via frames after open.
+		if (connectTimeChannels) {
+			this.transport.setChannels(Array.from(this._subscriptions.desiredChannels));
+		}
 		this.transport.open();
 	}
 
 	/** Disconnect intentionally (no automatic reconnection). */
 	disconnect(): void {
+		this.userDisconnected = true; // an explicit disconnect: subscribe() must not silently resurrect it
 		this.shutdown.abort(); // cancel any pending reconnect backoff
 		this.onConnectionLost();
 		this.teardownEpoch();
@@ -329,8 +361,20 @@ export class SukkoClient extends TypedEventEmitter<SukkoClientEvents> {
 	subscribe(channels: string[]): void {
 		this._subscriptions.addDesired(channels);
 
-		if (this.transport.state === "open") {
-			this.send({ type: "subscribe", data: { channels } });
+		if (this.transport.capabilities.canSubscribe) {
+			if (this.transport.state === "open") {
+				this.send({ type: "subscribe", data: { channels } });
+			}
+			return;
+		}
+		// Connect-time-subscribe transport (SSE): the channel set lives in the request URL. If a stream is
+		// live, reconnect it with the new set (resumes via Last-Event-ID); if none is open yet, open one —
+		// on such a transport subscribing IS what starts/updates the stream. After a deliberate disconnect()
+		// (queue closed), only record the intent: reopening would feed a dead delivery queue.
+		if (this.transport.state !== "closed") {
+			this.forceReconnect();
+		} else if (!this.userDisconnected) {
+			this.connect();
 		}
 	}
 
@@ -339,8 +383,22 @@ export class SukkoClient extends TypedEventEmitter<SukkoClientEvents> {
 		this._subscriptions.remove(channels);
 		for (const ch of channels) this.recovery.forget(ch);
 
-		if (this.transport.state === "open") {
-			this.send({ type: "unsubscribe", data: { channels } });
+		if (this.transport.capabilities.canSubscribe) {
+			if (this.transport.state === "open") {
+				this.send({ type: "unsubscribe", data: { channels } });
+			}
+			return;
+		}
+		// Connect-time-subscribe transport (SSE): reconnect with the reduced set. Unsubscribing the LAST
+		// channel leaves nothing to stream (an SSE request needs ≥1 channel), so close the STREAM (not the
+		// client) — this keeps the delivery queue alive so a later subscribe() reopens and resumes it,
+		// unlike disconnect() which is the terminal client teardown.
+		if (this.transport.state !== "closed") {
+			if (this._subscriptions.desiredChannels.size === 0) {
+				this.closeStream();
+			} else {
+				this.forceReconnect();
+			}
 		}
 	}
 
@@ -351,9 +409,20 @@ export class SukkoClient extends TypedEventEmitter<SukkoClientEvents> {
 	/** Publish a JSON object to a channel. `data` must be an object — the contract's publish payload
 	 * (`PublishData.data`) is `type: object`, so a bare scalar is not a valid message body. */
 	publish(channel: string, data: JsonObject): void {
-		if (this.transport.state === "open") {
-			this.send({ type: "publish", data: { channel, data } });
+		if (this.transport.capabilities.canPublish) {
+			if (this.transport.state === "open") {
+				this.send({ type: "publish", data: { channel, data } });
+			}
+			return;
 		}
+		// A receive-only transport (SSE) has no client→server publish frame — route over REST (Scenario
+		// 4.3). §XII prior art: the WHATWG SSE / EventSource model is GET-only with no request body, so
+		// every SSE client (native EventSource, Ably, Centrifugo) publishes out-of-band over HTTP, not on
+		// the stream. `publish` is fire-and-forget (void), so it cannot reject; a REST failure surfaces on
+		// the `publishError` event rather than floating unhandled (§XI — no silent drop, no orphan promise).
+		void this.restPublish(channel, data).catch((err: unknown) => {
+			this.emit("publishError", publishErrorFromRest(err));
+		});
 	}
 
 	/**
@@ -444,6 +513,14 @@ export class SukkoClient extends TypedEventEmitter<SukkoClientEvents> {
 		if (this.transport.state !== "open") {
 			throw new NotConnectedError("cannot refresh token while disconnected");
 		}
+		// Proactive refresh sends an `auth` frame and awaits its `auth_ack` — a receive-only transport
+		// (SSE) has neither, so awaiting would hang forever. SSE refreshes REACTIVELY on a drop/401; a
+		// proactive call is WS-only. Update the credential offline instead and let the next stream carry it.
+		if (!this.transport.capabilities.canSend) {
+			throw new TransportError(
+				"refreshToken() is WebSocket-only — SSE refreshes reactively on reconnect; use updateToken()",
+			);
+		}
 		await this.auth.refresh();
 	}
 
@@ -454,6 +531,15 @@ export class SukkoClient extends TypedEventEmitter<SukkoClientEvents> {
 	 * never coalesces onto an in-flight refresh (it sends its own frame).
 	 */
 	async escalate(jwt: string): Promise<void> {
+		// SSE has no in-band `auth` frame (escalate-and-await-ack would hang) and no `subscribe` frame:
+		// escalation is by stream reconnect with the new JWT (spec.md §240, FR-010). Store the credential,
+		// then reconnect so the fresh stream presents it (Last-Event-ID resume); the reopen's PossibleGap
+		// covers any not-granted channels the api-key had filtered.
+		if (!this.transport.capabilities.canSend) {
+			this.auth.updateToken(jwt);
+			if (this.transport.state !== "closed") this.forceReconnect();
+			return;
+		}
 		const escalated = await this.auth.escalate(jwt, this.transport.state === "open");
 		if (escalated) {
 			const delta = this._subscriptions.notGranted();
@@ -493,6 +579,21 @@ export class SukkoClient extends TypedEventEmitter<SukkoClientEvents> {
 		this.reconnectAttempt = 0;
 		this.lastActivityTimestamp = Date.now();
 		this.startHeartbeat();
+
+		// A receive-only transport (SSE) has no client→server channel: no pos-replay `reconnect` frame, no
+		// in-band resubscribe (channels rode the connect-time URL, applied in connect()). Its only recovery
+		// signal is a synthetic PossibleGap — on any REOPEN, live replay cannot be confirmed (there is no
+		// ack, and Last-Event-ID resume is best-effort), so surface one per desired channel rather than
+		// silently resuming live-only (Scenario 4.5, FR-007's no-silent-drop invariant on the SSE path).
+		if (!this.transport.capabilities.canSend) {
+			if (this.hasConnectedBefore) {
+				for (const channel of this._subscriptions.desiredChannels) {
+					this.enqueue({ type: "possible_gap", channel });
+				}
+			}
+			this.hasConnectedBefore = true;
+			return;
+		}
 		this.startRecoveryTimer();
 
 		// Reconnect-with-replay (resume from stored pos on Kafka) or the Direct-probe — but only from the
@@ -559,11 +660,31 @@ export class SukkoClient extends TypedEventEmitter<SukkoClientEvents> {
 		}
 	}
 
+	/**
+	 * Immediately close and reopen the connection (no backoff, attempt counter reset). The single
+	 * intentional-restart primitive: a stale-connection network-listener trip, and — for a connect-time
+	 * transport (SSE) — applying a changed channel set (subscribe/unsubscribe) or a fresh escalation JWT,
+	 * since those ride the connect-time request rather than an in-band frame. Client-initiated close does
+	 * not echo, so this never enters the backoff/`handleTransportClose` path.
+	 */
 	private forceReconnect(): void {
 		this.reconnectAttempt = 0;
 		this.onConnectionLost(); // the transport closes with no echo here — flush recovery state directly
 		this.transport.close();
-		this.connect(); // teardownEpoch + fresh epoch handled inside connect()
+		this.connect(); // teardownEpoch + fresh epoch handled inside connect() (re-applies token + channels)
+	}
+
+	/**
+	 * Close the transport stream without tearing down the client (unlike disconnect(), the delivery queue
+	 * stays open). Used when a connect-time transport (SSE) has nothing left to stream — every channel
+	 * unsubscribed — so a later subscribe() can reopen and resume the same `messages()` consumer. Client-
+	 * initiated close does not echo, so this does not enter the reconnect/backoff path.
+	 */
+	private closeStream(): void {
+		this.onConnectionLost();
+		this.teardownEpoch();
+		this.transport.close();
+		this.setState("disconnected");
 	}
 
 	private handleMessage(data: string): void {
@@ -1002,4 +1123,22 @@ function waitForAbort(signal: AbortSignal): Promise<void> {
 	return new Promise<void>((resolve) => {
 		signal.addEventListener("abort", () => resolve(), { once: true });
 	});
+}
+
+/**
+ * Map a REST-publish failure onto the `publishError` event's `PublishError` shape — the sink for a
+ * fire-and-forget `publish()` routed over REST on a receive-only transport. The `message` is already
+ * redacted by `HttpApi` (§IX). The synthesized frame lets one consumer handle publish failures
+ * uniformly across WS and SSE.
+ */
+function publishErrorFromRest(err: unknown): PublishError {
+	const message = err instanceof Error ? err.message : "publish failed";
+	let code: PublishError["code"] = "publish_failed";
+	if (err instanceof PayloadTooLargeError) code = "message_too_large";
+	else if (err instanceof RateLimitedError) code = "rate_limited";
+	else if (err instanceof ValidationError) code = "invalid_request";
+	else if (err instanceof EditionRequiredError) code = "not_available";
+	else if (err instanceof ForbiddenError) code = "forbidden";
+	else if (err instanceof ServiceUnavailableError) code = "service_unavailable";
+	return { type: "publish_error", code, message };
 }
