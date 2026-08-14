@@ -622,6 +622,15 @@ export class SukkoClient extends TypedEventEmitter<SukkoClientEvents> {
 		this.teardownEpoch();
 		this.emit("close", code, reason);
 
+		// Reactive auth on a receive-only transport (SSE): a 401 handshake surfaces as UNAUTHORIZED (4001).
+		// The credential was rejected, so a plain reconnect would just re-fail; refresh via `getToken` then
+		// reconnect with backoff (FR-010, Scenario 3.4). Gated on `!canSend` — only SSE emits this; a WS
+		// transport reactively refreshes via in-band `auth_error` frames, so a stray 4001 there falls
+		// through to a plain transient reconnect.
+		if (code === CLOSE_CODES.UNAUTHORIZED && !this.transport.capabilities.canSend) {
+			void this.handleReactiveAuthReconnect();
+			return;
+		}
 		// Per-close-code reconnect policy (FR-019).
 		if (
 			code === CLOSE_CODES.NORMAL || // 1000 clean shutdown
@@ -636,6 +645,38 @@ export class SukkoClient extends TypedEventEmitter<SukkoClientEvents> {
 		}
 		// 1001 going-away, 1011 internal-error, 1006/abnormal, unknown → transient, reconnect with backoff.
 		void this.handleReconnect();
+	}
+
+	/**
+	 * SSE reactive auth: a 401 handshake means the current credential was rejected. Without a `getToken`
+	 * source there is nothing to try (a static token would only be re-rejected) — go terminal rather than
+	 * loop the dead credential forever (matching the 1008/4000 terminal path — `disconnected`, not `error`,
+	 * which is reserved for exhausted attempts). With `getToken`, fetch a fresh credential and reconnect
+	 * through the backoff path so a getToken that keeps returning a bad token cannot form a tight loop.
+	 */
+	private async handleReactiveAuthReconnect(): Promise<void> {
+		if (!this.auth.canFetchFreshToken) {
+			this.setState("disconnected");
+			return;
+		}
+		try {
+			await this.auth.fetchFreshToken();
+		} catch {
+			// getToken failed (e.g. transient network) — reconnect with the old token anyway; the retry hits
+			// 401 again and backs off further, so this is self-limiting, never an uncaught rejection (§XI).
+		}
+		// getToken is a user network call — the world can change across the await. Re-validate that a
+		// reconnect is still wanted: the stream is still down (a concurrent connect()/forceReconnect() may
+		// have re-established it), the user has not disconnect()-ed (which closed the delivery queue), and
+		// there is still something subscribed (unsubscribe-all → closeStream() may have emptied it). Missing
+		// any of these, entering handleReconnect() would strand the client in a spurious "reconnecting".
+		if (
+			this.transport.state === "closed" &&
+			!this.userDisconnected &&
+			this._subscriptions.desiredChannels.size > 0
+		) {
+			void this.handleReconnect();
+		}
 	}
 
 	private handleTransportError(): void {

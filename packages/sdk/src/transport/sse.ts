@@ -14,7 +14,7 @@
 // `fetch` and the `clock` are injectable seams for deterministic tests.
 
 import { type Clock, SystemClock } from "../_clock";
-import { SUKKO_DEFAULTS } from "../constants";
+import { CLOSE_CODES, SUKKO_DEFAULTS } from "../constants";
 import { TypedEventEmitter } from "../emitter";
 import type { FetchLike } from "../http";
 import type { Transport, TransportCapabilities, TransportEvents, TransportState } from "./base";
@@ -41,6 +41,7 @@ export interface SseTransportOptions {
 const CLOSE_TRANSIENT = 1006;
 const CLOSE_TERMINAL = 1008;
 const CLOSE_NORMAL = 1000;
+const CLOSE_UNAUTHORIZED = CLOSE_CODES.UNAUTHORIZED; // 401 handshake → client reactive-auth refresh
 
 // Ceiling on a single unterminated line / accumulated frame. Legit messages are ≤64KB; 1M chars is a
 // generous headroom whose only job is to stop a newline-less or never-dispatched flood from growing
@@ -173,10 +174,15 @@ export class SseTransport extends TypedEventEmitter<TransportEvents> implements 
 		if (signal.aborted) return; // closed during the handshake
 
 		if (response.status !== 200 || response.body === null) {
-			// A 4xx is terminal — 400 (bad request), 401 (auth; reactive-reconnect deferred), 403
-			// (Pro-gate) — EXCEPT 429 (tenant connection limit), a transient capacity condition that a
-			// backoff-reconnect resolves. 5xx is transient. See the client's close-code policy.
+			// 401 is its own signal: the credential was rejected → the client refreshes via `getToken` and
+			// reconnects (CLOSE_UNAUTHORIZED). A 403 (Pro-gate) or 400 (bad request) is terminal — a fresh
+			// token cannot fix it. 429 (tenant connection limit) and 5xx are transient capacity conditions a
+			// backoff-reconnect resolves. See the client's close-code policy.
 			const s = response.status;
+			if (s === 401) {
+				this.fail(CLOSE_UNAUTHORIZED, "sse connect status 401");
+				return;
+			}
 			const terminal = s >= 400 && s < 500 && s !== 429;
 			this.fail(terminal ? CLOSE_TERMINAL : CLOSE_TRANSIENT, `sse connect status ${s}`);
 			return;

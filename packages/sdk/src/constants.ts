@@ -32,7 +32,8 @@ export const SUKKO_DEFAULTS = {
 	sseIdleTimeoutMs: 90000,
 } as const;
 
-/** WebSocket close codes used by the Sukko protocol. */
+/** Close codes the client acts on: WebSocket protocol codes plus one SDK-internal synthetic
+ * (`UNAUTHORIZED`) the SSE transport raises to the client — see each field. */
 export const CLOSE_CODES = {
 	/** Normal closure (client or server initiated). */
 	NORMAL: 1000,
@@ -46,6 +47,11 @@ export const CLOSE_CODES = {
 	HEARTBEAT_TIMEOUT: 4000,
 	/** Remote (operator-initiated) close: server force-disconnected this client. Terminal — no auto-reconnect (FR-019). */
 	FORCE_DISCONNECT: 4000,
+	/** SDK-internal synthetic code (NOT a wire close code): the SSE transport signals a 401 handshake so
+	 * the client can reactively refresh the credential via `getToken` and reconnect, distinct from a 403
+	 * (terminal, `POLICY_VIOLATION`). SSE auth failures are HTTP 401s (see the gateway OpenAPI), never a
+	 * WebSocket close — this code never crosses the wire. */
+	UNAUTHORIZED: 4001,
 } as const;
 
 /** Whether a close was initiated by this client (`local`) or by the peer (`remote`) — carried on a `ConnectionClosedError`. */

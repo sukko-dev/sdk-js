@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { FakeClock } from "../src/_clock";
 import { AuthManager, type AuthManagerOptions } from "../src/auth";
-import { NotConnectedError, UnauthorizedError } from "../src/errors";
+import { ConfigurationError, NotConnectedError, UnauthorizedError } from "../src/errors";
 
 // The AuthManager's async steps (getToken, send, await-ack) settle over a few microtasks; `tick`
 // flushes them without advancing virtual time (the clock is advanced explicitly for floor/proactive).
@@ -279,5 +279,22 @@ describe("AuthManager — close()", () => {
 		await expect(refreshing).rejects.toThrow(NotConnectedError);
 		await tick();
 		expect(sent).toEqual([]); // the stale frame was NOT sent into a (possibly reconnected) epoch
+	});
+});
+
+describe("AuthManager — fetchFreshToken (SSE reactive refresh)", () => {
+	it("fetches via getToken and adopts it as the current credential", async () => {
+		const { auth, sent } = makeAuth({ getToken: async () => "reactive-jwt" });
+		expect(auth.canFetchFreshToken).toBe(true);
+		await auth.fetchFreshToken();
+		expect(auth.currentToken).toBe("reactive-jwt");
+		expect(sent).toEqual([]); // no `auth` frame — SSE has no client→server channel
+	});
+
+	it("rejects with ConfigurationError when no getToken is configured", async () => {
+		const { auth } = makeAuth({ getToken: undefined, token: "static" });
+		expect(auth.canFetchFreshToken).toBe(false);
+		await expect(auth.fetchFreshToken()).rejects.toBeInstanceOf(ConfigurationError);
+		expect(auth.currentToken).toBe("static"); // unchanged
 	});
 });

@@ -16,19 +16,32 @@ import type {
 	TransportState,
 } from "../src/transport";
 
-/** A receive-only transport (SSE-shaped): no client→server channel, connect-time channels via setChannels. */
+/** A receive-only transport (SSE-shaped): no client→server channel, connect-time channels via setChannels.
+ * Accepts capability overrides so a WS-shaped (canSend) variant can be exercised for the 4001 gate. */
 class FakeSseTransport extends TypedEventEmitter<TransportEvents> implements Transport {
 	private _state: TransportState = "closed";
 	channelsHistory: string[][] = []; // every setChannels() payload, in order
 	token = "";
 	openCount = 0;
 	sent: string[] = []; // must stay empty — send() is a no-op on a receive-only transport
+	private readonly caps: TransportCapabilities;
+
+	constructor(caps?: Partial<TransportCapabilities>) {
+		super();
+		this.caps = {
+			canSend: false,
+			canSubscribe: false,
+			canPublish: false,
+			canPauseReceive: false,
+			...caps,
+		};
+	}
 
 	get state(): TransportState {
 		return this._state;
 	}
 	get capabilities(): TransportCapabilities {
-		return { canSend: false, canSubscribe: false, canPublish: false, canPauseReceive: false };
+		return this.caps;
 	}
 	get url(): string {
 		return "https://gw.example.com";
@@ -296,6 +309,156 @@ describe("SSE client — auth", () => {
 		client.connect();
 		await flush();
 		await expect(client.refreshToken()).rejects.toBeInstanceOf(TransportError);
+		client.disconnect();
+	});
+});
+
+describe("SSE client — reactive auth (401 → UNAUTHORIZED)", () => {
+	const UNAUTHORIZED = 4001;
+
+	function makeReactiveClient(
+		opts: { getToken?: () => Promise<string>; transport?: FakeSseTransport } = {},
+	): { client: SukkoClient; transport: FakeSseTransport; clock: FakeClock } {
+		const clock = new FakeClock();
+		const transport = opts.transport ?? new FakeSseTransport();
+		const client = new SukkoClient({
+			transport,
+			autoConnect: false,
+			reconnect: true,
+			token: "stale-token",
+			getToken: opts.getToken,
+			clock,
+			fetch: async () => new Response(null, { status: 202 }),
+		});
+		return { client, transport, clock };
+	}
+
+	it("on a 401 with getToken: refreshes the credential once and reconnects via backoff", async () => {
+		const getToken = vi.fn(async () => "fresh-jwt");
+		const { client, transport, clock } = makeReactiveClient({ getToken });
+		const reconnecting = vi.fn();
+		client.on("reconnecting", reconnecting);
+		client.subscribe(["acme.a"]);
+		await flush();
+		expect(transport.openCount).toBe(1);
+
+		transport.simulateClose(UNAUTHORIZED); // 401 handshake
+		await flush(); // getToken resolves → handleReconnect arms the backoff
+		await clock.advance(30000); // fire the backoff sleeper
+		await flush();
+
+		expect(getToken).toHaveBeenCalledTimes(1);
+		expect(transport.token).toBe("fresh-jwt"); // reconnected with the refreshed credential
+		expect(transport.openCount).toBe(2);
+		expect(reconnecting).toHaveBeenCalled(); // it IS the backoff path (inverse of an intentional restart)
+		client.disconnect();
+	});
+
+	it("on a 401 with NO getToken: goes terminal (disconnected) rather than looping a dead credential", async () => {
+		const { client, transport } = makeReactiveClient(); // no getToken
+		client.subscribe(["acme.a"]);
+		await flush();
+		const openCountBefore = transport.openCount;
+
+		transport.simulateClose(UNAUTHORIZED);
+		await flush();
+		expect(client.state).toBe("disconnected");
+		expect(transport.openCount).toBe(openCountBefore); // did NOT reconnect a credential it can't fix
+	});
+
+	it("a getToken rejection still reconnects with backoff (no unhandled rejection)", async () => {
+		const getToken = vi.fn(async () => {
+			throw new Error("token service down");
+		});
+		const { client, transport, clock } = makeReactiveClient({ getToken });
+		client.subscribe(["acme.a"]);
+		await flush();
+
+		transport.simulateClose(UNAUTHORIZED);
+		await flush(); // getToken rejects → caught → handleReconnect arms backoff
+		await clock.advance(30000);
+		await flush();
+		expect(getToken).toHaveBeenCalledTimes(1);
+		expect(client.state).toBe("connected"); // reconnected with the old token (self-limiting retry)
+		client.disconnect();
+	});
+
+	it("disconnect() during the getToken await does not strand the client in 'reconnecting'", async () => {
+		let releaseToken: (t: string) => void = () => {};
+		const getToken = vi.fn(
+			() =>
+				new Promise<string>((resolve) => {
+					releaseToken = resolve;
+				}),
+		);
+		const { client, transport } = makeReactiveClient({ getToken });
+		const reconnecting = vi.fn();
+		client.on("reconnecting", reconnecting);
+		client.subscribe(["acme.a"]);
+		await flush();
+
+		transport.simulateClose(UNAUTHORIZED); // → awaits getToken (still pending)
+		await flush();
+		client.disconnect(); // user disconnects mid-fetch
+		releaseToken("fresh-jwt"); // getToken now resolves — the recheck must abort the reconnect
+		await flush();
+		await flush();
+
+		expect(client.state).toBe("disconnected"); // NOT resurrected to "reconnecting"
+		expect(reconnecting).not.toHaveBeenCalled();
+	});
+
+	it("skips the reactive reconnect if a manual connect() re-established the stream during the getToken await", async () => {
+		let releaseToken: (t: string) => void = () => {};
+		const getToken = vi.fn(
+			() =>
+				new Promise<string>((resolve) => {
+					releaseToken = resolve;
+				}),
+		);
+		const { client, transport } = makeReactiveClient({ getToken });
+		client.subscribe(["acme.a"]);
+		await flush();
+
+		transport.simulateClose(UNAUTHORIZED); // → awaits getToken (still pending)
+		await flush();
+		client.connect(); // consumer re-establishes the stream before getToken resolves
+		await flush();
+		const openCountAfterReconnect = transport.openCount;
+
+		releaseToken("fresh-jwt"); // resolves — the recheck sees state !== "closed" and skips
+		await flush();
+		expect(transport.openCount).toBe(openCountAfterReconnect); // no second (reactive) reopen
+		client.disconnect();
+	});
+
+	it("a 403 (POLICY_VIOLATION 1008) is terminal — no reactive auth, no getToken", async () => {
+		const getToken = vi.fn(async () => "fresh-jwt");
+		const { client, transport } = makeReactiveClient({ getToken });
+		client.subscribe(["acme.a"]);
+		await flush();
+		const openCountBefore = transport.openCount;
+
+		transport.simulateClose(1008); // 403 → terminal, distinct from the 4001 reactive path
+		await flush();
+		expect(client.state).toBe("disconnected");
+		expect(getToken).not.toHaveBeenCalled(); // the gate keys on 4001 exactly
+		expect(transport.openCount).toBe(openCountBefore);
+	});
+
+	it("a canSend (WS-shaped) transport emitting 4001 falls through to a plain reconnect — no getToken", async () => {
+		const getToken = vi.fn(async () => "fresh-jwt");
+		const wsShaped = new FakeSseTransport({ canSend: true, canSubscribe: true, canPublish: true });
+		const { client, clock } = makeReactiveClient({ getToken, transport: wsShaped });
+		client.connect(); // WS-shaped: subscribe is in-band, connect() opens directly
+		await flush();
+
+		wsShaped.simulateClose(UNAUTHORIZED);
+		await flush();
+		await clock.advance(30000);
+		await flush();
+		expect(getToken).not.toHaveBeenCalled(); // reactive-auth is SSE-only (!canSend gate)
+		expect(wsShaped.openCount).toBe(2); // plain transient reconnect
 		client.disconnect();
 	});
 });

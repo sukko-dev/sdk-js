@@ -191,6 +191,17 @@ describe("SseTransport — connect", () => {
 		expect(closed).toHaveBeenCalledWith(1008, expect.stringContaining("403")); // terminal
 	});
 
+	it("emits UNAUTHORIZED (4001) on a 401, distinct from the 403 terminal close", async () => {
+		const fetchImpl: FetchLike = async () => new Response("unauthorized", { status: 401 });
+		const { transport } = makeTransport(fetchImpl);
+		const closed = vi.fn();
+		transport.on("close", closed);
+		transport.open();
+		await flush();
+		// 4001 (not 1008) — the client refreshes via getToken and reconnects, rather than giving up.
+		expect(closed).toHaveBeenCalledWith(4001, expect.stringContaining("401"));
+	});
+
 	it("emits a transient close (1006) on a 5xx", async () => {
 		const fetchImpl: FetchLike = async () => new Response("boom", { status: 503 });
 		const { transport } = makeTransport(fetchImpl);

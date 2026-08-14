@@ -100,6 +100,24 @@ export class AuthManager {
 		this.token = token;
 	}
 
+	/** Whether a fresh credential can be fetched (`getToken` configured) — the precondition for SSE
+	 * reactive-auth: a static token would just be re-rejected, so a 401 is only recoverable with getToken. */
+	get canFetchFreshToken(): boolean {
+		return this.getToken !== undefined;
+	}
+
+	/**
+	 * Fetch a fresh credential via `getToken` and adopt it for the next connect. Used by the SSE reactive
+	 * refresh (a 401 handshake): unlike `refresh()`, it sends no `auth` frame and awaits no ack — SSE has
+	 * neither — so it never hangs. Requires `getToken` (guard with `canFetchFreshToken`).
+	 */
+	async fetchFreshToken(): Promise<void> {
+		if (this.getToken === undefined) {
+			throw new ConfigurationError("cannot fetch a fresh token: no getToken configured");
+		}
+		this.updateToken(await this.getToken());
+	}
+
 	// --- refresh / escalation -----------------------------------------------------------------
 
 	private effectiveFloor(): number {
