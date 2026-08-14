@@ -62,7 +62,7 @@ export type {
 
 // Push subscription management — the `client.push` namespace type surface.
 export { PushClient } from "./push";
-export type { PushPlatform, PushSubscribeOptions } from "./push";
+export type { EnableWebPushOptions, PushPlatform, PushSubscribeOptions } from "./push";
 
 // Errors — the SukkoError base (catch-all) plus every error a public method throws or an event carries.
 // `restPublish`/`push` add the REST error map (edition, over-size, forbidden, conflict, validation).
