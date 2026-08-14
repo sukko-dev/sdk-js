@@ -9,12 +9,16 @@ export { useSubscription } from "./hooks/use-subscription";
 export { useSukkoEvent } from "./hooks/use-event";
 
 // Re-export hook types
-export type { UseSubscriptionOptions, UseSubscriptionResult } from "./hooks/use-subscription";
+export type {
+	TypedMessage,
+	UseSubscriptionOptions,
+	UseSubscriptionResult,
+} from "./hooks/use-subscription";
 
 // Re-export core types for convenience
 export type {
 	ConnectionState,
-	DataMessage,
+	Message,
 	SukkoClientEvents,
 	SukkoClientOptions,
 } from "@sukko/sdk";

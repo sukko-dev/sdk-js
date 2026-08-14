@@ -1,7 +1,11 @@
-import type { DataMessage } from "@sukko/sdk";
+import type { Message } from "@sukko/sdk";
 import { readable } from "svelte/store";
 import type { Readable } from "svelte/store";
 import { getSukkoClient } from "../context";
+
+/** A broadcast `Message` with its `data` narrowed to the caller's payload type `T`. The SDK models
+ * `Message.data` as an opaque JSON object; this Svelte binding layers the generic `T` convenience. */
+export type TypedMessage<T = unknown> = Omit<Message, "data"> & { data: T };
 
 export interface SubscriptionOptions<T = unknown> {
 	/** Channels to subscribe to. */
@@ -9,12 +13,12 @@ export interface SubscriptionOptions<T = unknown> {
 	/** Enable/disable the subscription. Default: true. */
 	enabled?: boolean;
 	/** Callback fired on each incoming message. */
-	onMessage?: (msg: DataMessage<T>) => void;
+	onMessage?: (msg: TypedMessage<T>) => void;
 }
 
 export interface SubscriptionResult<T = unknown> {
 	/** The most recent message received on any subscribed channel. */
-	lastMessage: DataMessage<T> | null;
+	lastMessage: TypedMessage<T> | null;
 	/** The data payload of the most recent message. */
 	data: T | null;
 	/** Whether channels are actively subscribed. */
@@ -66,9 +70,9 @@ export function createSubscription<T = unknown>(
 		}
 
 		// Listen for messages on subscribed channels
-		const off = client.on("message", (msg: DataMessage) => {
+		const off = client.on("message", (msg: Message) => {
 			if (channels.includes(msg.channel)) {
-				const typed = msg as DataMessage<T>;
+				const typed = msg as TypedMessage<T>;
 				set({
 					lastMessage: typed,
 					data: typed.data,

@@ -15,6 +15,7 @@ class MockTransport extends TypedEventEmitter<TransportEvents> implements Transp
 		return { canSend: true, canSubscribe: true, canPublish: true };
 	}
 	setToken(_token: string): void {}
+	setChannels(_channels: string[]): void {}
 	open(): void {
 		this._state = "opening";
 	}

@@ -223,13 +223,22 @@ describe("WebSocketTransport", () => {
 	});
 
 	describe("capabilities", () => {
-		it("returns all capabilities as true", () => {
+		it("supports send/subscribe/publish but cannot pause receiving (WHATWG auto-drains)", () => {
 			const transport = createTransport();
 			expect(transport.capabilities).toEqual({
 				canSend: true,
 				canSubscribe: true,
 				canPublish: true,
+				canPauseReceive: false,
 			});
+		});
+
+		it("pause()/resume() are no-ops that do not throw", () => {
+			const transport = createTransport();
+			expect(() => {
+				transport.pause();
+				transport.resume();
+			}).not.toThrow();
 		});
 	});
 

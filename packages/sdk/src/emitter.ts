@@ -49,12 +49,24 @@ export class TypedEventEmitter<T extends EventMap = EventMap> {
 		return this.listeners.get(event)?.size ?? 0;
 	}
 
-	/** Emit an event to all registered listeners. */
+	/**
+	 * Emit an event to all registered listeners. Each listener is invoked in isolation: a throwing
+	 * listener neither aborts the fan-out to the other listeners nor propagates into the caller. This is
+	 * load-bearing on the hot delivery path — the emitter is the non-back-pressured tap, and a throwing
+	 * `.on("message")` handler must not break the authoritative `messages()` stream or starve other
+	 * listeners (NFR-001). The caught error is routed to the SDK logger once logging is wired (parallel
+	 * to `_redact`); until then it is contained here rather than surfaced.
+	 */
 	protected emit<K extends keyof T>(event: K, ...args: Parameters<T[K]>): void {
 		const handlers = this.listeners.get(event);
 		if (!handlers) return;
-		for (const handler of handlers) {
-			handler(...args);
+		// Snapshot so a listener that unsubscribes/subscribes during dispatch can't disturb iteration.
+		for (const handler of [...handlers]) {
+			try {
+				handler(...args);
+			} catch {
+				// Contained — see the method doc. A user-callback throw must not break delivery.
+			}
 		}
 	}
 }

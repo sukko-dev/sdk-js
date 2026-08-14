@@ -204,17 +204,17 @@ new SukkoClient(options: SukkoClientOptions)
 | `token` | `string` | `""` | JWT token (passed to transport via `setToken()`) |
 | `autoConnect` | `boolean` | `true` | Connect on construction |
 | `reconnect` | `boolean` | `true` | Auto-reconnect on disconnect |
-| `reconnectAttempts` | `number` | `5` | Attempts before switching to indefinite mode |
-| `reconnectDelayBase` | `number` | `1000` | Base delay (ms) for exponential backoff |
-| `reconnectDelayMax` | `number` | `30000` | Max delay (ms) between reconnect attempts |
-| `heartbeatInterval` | `number` | `30000` | Heartbeat interval (ms) |
-| `heartbeatTimeout` | `number` | `5000` | Pong timeout (ms) |
-| `staleConnectionThreshold` | `number` | `30000` | Ms of inbound silence before the connection is treated as stale and recycled |
+| `reconnectMaxAttempts` | `number` | `5` | Max reconnect attempts before giving up (`0` = unlimited) |
+| `backoffBaseMs` | `number` | `1000` | Base delay (ms) for the Full-Jitter reconnect backoff |
+| `backoffMaxMs` | `number` | `30000` | Cap (ms) for the reconnect backoff |
+| `heartbeatIntervalMs` | `number` | `30000` | Heartbeat interval (ms) |
+| `pongTimeoutMs` | `number` | `5000` | Time (ms) to wait for any inbound frame after a heartbeat before declaring the link dead |
+| `staleConnectionThresholdMs` | `number` | `30000` | Ms of inbound silence before the connection is treated as stale and recycled |
 | `getToken` | `() => Promise<string>` | — | Async token refresh callback |
 
-**Methods**: `connect()`, `disconnect()`, `subscribe(channels)`, `unsubscribe(channels)`, `publish(channel, data)`, `updateToken(token)`, `refreshToken()`, `reconnectWithReplay()`
+**Methods**: `connect()`, `disconnect()`, `subscribe(channels)`, `unsubscribe(channels)`, `publish(channel, data)`, `history(channel, limit?)`, `updateToken(token)`, `refreshToken()`, `escalate(jwt)`
 
-**Events**: `message`, `stateChange`, `subscriptionAck`, `subscribeError`, `unsubscriptionAck`, `unsubscribeError`, `publishAck`, `publishError`, `reconnectAck`, `reconnectError`, `authAck`, `authError`, `pong`, `error`, `close`, `reconnecting`
+**Events**: `message`, `stateChange`, `subscriptionAck`, `subscribeError`, `unsubscriptionAck`, `unsubscribeError`, `publishAck`, `publishError`, `reconnectAck`, `reconnectError`, `authAck`, `authError`, `pong`, `error`, `historyError`, `recoveryInterrupted`, `close`, `reconnecting`
 
 ### `@sukko/websocket`
 

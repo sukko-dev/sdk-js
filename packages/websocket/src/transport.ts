@@ -33,7 +33,8 @@ const DEFAULT_CONNECTION_TIMEOUT = 10000;
 export class WebSocketTransport extends TypedEventEmitter<TransportEvents> implements Transport {
 	private ws: WebSocket | null = null;
 	private token: string;
-	private readonly url: string;
+	/** Public so the client can derive the gateway HTTP origin for REST/push (Transport.url). */
+	readonly url: string;
 	private readonly connectionTimeout: number;
 	private readonly WebSocketCtor: WebSocketConstructor | undefined;
 	private connectionTimer: ReturnType<typeof setTimeout> | null = null;
@@ -63,11 +64,27 @@ export class WebSocketTransport extends TypedEventEmitter<TransportEvents> imple
 	}
 
 	get capabilities(): TransportCapabilities {
-		return { canSend: true, canSubscribe: true, canPublish: true };
+		// The WHATWG WebSocket (browser + Node global) auto-drains inbound frames and exposes no read
+		// pause, so canPauseReceive is false — back-pressure falls to the delivery queue's overflow
+		// policy. A `ws`-npm-backed Node transport (@sukko/websocket-node) sets this true.
+		return { canSend: true, canSubscribe: true, canPublish: true, canPauseReceive: false };
 	}
 
 	setToken(token: string): void {
 		this.token = token;
+	}
+
+	setChannels(_channels: string[]): void {
+		// No-op — WebSocket subscribes in-band via `subscribe` frames (canSubscribe: true). The client
+		// drives subscriptions directly; connect-time channels are an SSE-only concern.
+	}
+
+	pause(): void {
+		// No-op — the WHATWG WebSocket cannot pause receiving (canPauseReceive: false).
+	}
+
+	resume(): void {
+		// No-op — see pause().
 	}
 
 	open(): void {

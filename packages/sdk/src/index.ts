@@ -5,22 +5,27 @@ export { SukkoClient } from "./client";
 export { TypedEventEmitter } from "./emitter";
 export type { EventMap } from "./emitter";
 
-// Transport abstraction
+// Transport abstraction + the built-in SSE transport (receive-only; the WebSocket adapter is
+// `@sukko/websocket`).
 export type {
 	Transport,
 	TransportCapabilities,
 	TransportEvents,
 	TransportState,
+	SseTransportOptions,
 } from "./transport";
+export { SseTransport } from "./transport";
+export type { FetchLike } from "./http";
 
-// Protocol types
+// Client configuration + event surface
+export type { ConnectionState, SukkoClientEvents, SukkoClientOptions } from "./options";
+
+// Protocol + delivery-stream types — the single AsyncAPI-derived contract model (`./messages`). The
+// `message` tap and the `messages()` delivery stream share one `Message` type. (The full public-API
+// surface cleanup — adding/removing exports per the disposition table — lands in the T041 pass.)
 export type {
-	// Connection
-	ConnectionState,
-	SukkoClientEvents,
-	SukkoClientOptions,
 	// Client → Server
-	AuthRefreshMessage,
+	AuthMessage,
 	ClientMessage,
 	HeartbeatMessage,
 	PublishMessage,
@@ -28,24 +33,58 @@ export type {
 	SubscribeMessage,
 	UnsubscribeMessage,
 	// Server → Client
-	AuthAckMessage,
+	AuthAck,
 	AuthErrorCode,
-	AuthErrorMessage,
-	DataMessage,
+	AuthError,
 	ErrorMessage,
-	PongMessage,
-	PublishAckMessage,
+	JsonObject,
+	Message,
+	Pong,
+	PublishAck,
 	PublishErrorCode,
-	PublishErrorMessage,
-	ReconnectAckMessage,
+	PublishError,
+	ReconnectAck,
 	ReconnectErrorCode,
-	ReconnectErrorMessage,
+	ReconnectError,
 	ServerMessage,
-	SubscribeErrorMessage,
-	SubscriptionAckMessage,
-	UnsubscribeErrorMessage,
-	UnsubscriptionAckMessage,
-} from "./types";
+	SubscribeError,
+	SubscriptionAck,
+	UnsubscribeError,
+	UnsubscriptionAck,
+	// Delivery stream (`messages()`)
+	DeliveryItem,
+	Gap,
+	HistoryError,
+	Overflow,
+	PossibleGap,
+	ReplayMessage,
+} from "./messages";
+
+// Push subscription management — the `client.push` namespace type surface.
+export { PushClient } from "./push";
+export type { EnableWebPushOptions, PushPlatform, PushSubscribeOptions } from "./push";
+
+// Errors — the SukkoError base (catch-all) plus every error a public method throws or an event carries.
+// `restPublish`/`push` add the REST error map (edition, over-size, forbidden, conflict, validation).
+export {
+	ConfigurationError,
+	ConflictError,
+	EditionRequiredError,
+	ForbiddenError,
+	NotConnectedError,
+	PayloadTooLargeError,
+	ProtocolError,
+	RateLimitedError,
+	RecoveryInterruptedError,
+	ServiceUnavailableError,
+	SukkoError,
+	TransportError,
+	UnauthorizedError,
+	ValidationError,
+} from "./errors";
+
+// Delivery-queue overflow policy — referenced by the `overflowPolicy` client option.
+export type { OverflowPolicy } from "./backpressure";
 
 // Constants
 export { CLOSE_CODES, CLIENT_ID_KEY, SUKKO_DEFAULTS } from "./constants";

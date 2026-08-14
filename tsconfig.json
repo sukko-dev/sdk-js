@@ -9,6 +9,8 @@
 		"verbatimModuleSyntax": true,
 		"isolatedDeclarations": true,
 		"strict": true,
+		"noUnusedLocals": true,
+		"noUnusedParameters": true,
 		"skipLibCheck": true,
 		"esModuleInterop": true,
 		"forceConsistentCasingInFileNames": true

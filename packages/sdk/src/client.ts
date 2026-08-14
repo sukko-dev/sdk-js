@@ -1,37 +1,66 @@
+import { type Clock, SystemClock } from "./_clock";
+import { AuthManager } from "./auth";
+import { DeliveryQueue } from "./backpressure";
 import { CLIENT_ID_KEY, CLOSE_CODES, SUKKO_DEFAULTS } from "./constants";
 import { TypedEventEmitter } from "./emitter";
-import type { Transport } from "./transport";
+import {
+	ConfigurationError,
+	EditionRequiredError,
+	ForbiddenError,
+	NotConnectedError,
+	PayloadTooLargeError,
+	REPLAY_ERROR_CODES,
+	RateLimitedError,
+	RecoveryInterruptedError,
+	ServiceUnavailableError,
+	TransportError,
+	ValidationError,
+} from "./errors";
+import { HeartbeatMonitor } from "./heartbeat";
+import { HttpApi, httpBaseFromWs } from "./http";
 import type {
-	AuthAckMessage,
-	AuthErrorMessage,
+	AuthAck,
+	AuthError,
 	ClientMessage,
-	ConnectionState,
-	DataMessage,
+	DeliveryItem,
 	ErrorMessage,
-	PongMessage,
-	PublishAckMessage,
-	PublishErrorMessage,
-	ReconnectAckMessage,
-	ReconnectErrorMessage,
-	SubscribeErrorMessage,
-	SubscriptionAckMessage,
-	SukkoClientEvents,
-	SukkoClientOptions,
-	UnsubscribeErrorMessage,
-	UnsubscriptionAckMessage,
-} from "./types";
+	Gap,
+	HistoryComplete,
+	HistoryError,
+	JsonObject,
+	Message,
+	Pong,
+	PublishAck,
+	PublishError,
+	ReconnectAck,
+	ReconnectError,
+	ReplayComplete,
+	ReplayMessage,
+	SubscribeError,
+	SubscriptionAck,
+	UnsubscribeError,
+	UnsubscriptionAck,
+} from "./messages";
+import type { ConnectionState, SukkoClientEvents, SukkoClientOptions } from "./options";
+import { PushClient } from "./push";
+import { type RecoveryAction, RecoveryEngine } from "./recovery";
+import { SubscriptionState } from "./subscriptions";
+import type { Transport } from "./transport";
 
-type ResolvedOptions = Required<Omit<SukkoClientOptions, "transport" | "token" | "getToken">> & {
-	token: string;
-	getToken: SukkoClientOptions["getToken"];
-};
+// The credential options (`token`/`getToken`) are owned by the AuthManager; `clock`/`transport`/`fetch`/
+// `baseUrl` are consumed at construction. What remains are the resolved timing/reconnect/queue knobs.
+type ResolvedOptions = Required<
+	Omit<SukkoClientOptions, "transport" | "token" | "getToken" | "clock" | "baseUrl" | "fetch">
+>;
 
 /**
  * Sukko real-time client.
  *
- * Framework-agnostic, transport-agnostic client implementing the full Sukko
- * protocol: subscribe, unsubscribe, publish, heartbeat, reconnection with
- * replay, and mid-connection auth refresh.
+ * Framework-agnostic, transport-agnostic client: subscribe, unsubscribe, publish, heartbeat,
+ * reconnection, gap recovery, a back-pressured `messages()` delivery stream, and manual token refresh.
+ * On reconnect the client resumes from the last-seen opaque `pos` (reconnect-replay) or, on the Direct
+ * backend, degrades to resubscribe + a synthetic `PossibleGap`; live gaps drive an automatic per-channel
+ * replay. Recovery is owned by the RecoveryEngine and driven by a per-epoch clock-based timer.
  *
  * The transport layer (WebSocket, SSE, Web Push, etc.) is injected via the `transport`
  * option, keeping this client decoupled from any specific transport.
@@ -62,19 +91,59 @@ export class SukkoClient extends TypedEventEmitter<SukkoClientEvents> {
 
 	// Reconnection
 	private reconnectAttempt = 0;
+	// Whether the transport has opened at least once — gates the SSE reopen PossibleGap (first open is a
+	// fresh subscription with nothing to have missed; a reopen cannot confirm live replay).
+	private hasConnectedBefore = false;
+	// Set by an explicit disconnect() (which also closes the client-lifetime delivery queue). Gates the
+	// SSE subscribe()-reopen so a subscribe after a deliberate disconnect records intent without opening a
+	// stream into a dead queue; a closeStream() (unsubscribe-all) leaves this false so subscribe() reopens.
+	private userDisconnected = false;
 
-	// Subscriptions
-	private _subscriptions = new Set<string>();
+	// Subscriptions — desired-vs-granted state (FR-009). `desired` is what the caller asked for; the
+	// not-granted delta (desired minus granted) is what an api-key→JWT escalation re-subscribes.
+	private readonly _subscriptions = new SubscriptionState();
 
-	// Replay state
-	private clientId: string;
-	private lastPos = new Map<string, string>();
+	// Auth — the AuthManager owns the live credential and the single-flight refresh / escalation machinery.
+	private readonly auth: AuthManager;
+
+	// REST surface — an authed HttpApi (+ push namespace) over the gateway HTTP origin, when one is
+	// resolvable (the `baseUrl` option or the transport's `url`). Null otherwise; `push`/`restPublish`
+	// then throw. `HttpApi` holds no pooled connections (per-request `fetch`), so nothing to tear down.
+	private readonly http: HttpApi | null;
+	private readonly pushClient: PushClient | null;
+
+	// Delivery — a client-lifetime bounded queue drained by `messages()`; the event-emitter is the
+	// non-back-pressured pre-queue tap (§ plan: forced dual delivery surface).
+	private readonly deliveryQueue: DeliveryQueue;
+	private queueConsumer = false;
+	private transportPaused = false;
+
+	// Recovery — the RecoveryEngine is the single owner of `client_id` and per-channel opaque `pos`,
+	// plus the reconnect-replay / live-replay / Direct-degrade FSM. The client routes wire frames into
+	// it and executes the canonical actions it returns (§XV single source of truth).
+	private readonly recovery: RecoveryEngine;
 	private lastActivityTimestamp: number = Date.now();
 
-	// Timers
-	private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
-	private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
-	private pongTimeout: ReturnType<typeof setTimeout> | null = null;
+	// Condvar for the per-epoch recovery timer: aborting `recoveryWake` wakes the timer to recompute
+	// its next deadline after the engine's state changes (a gap arrives, a replay completes). Swapped
+	// for a fresh controller on each wake so a later wake can abort again.
+	private recoveryWake = new AbortController();
+
+	// Timing seam (NFR-006) — injectable via options; defaults to SystemClock (its setTimeout/Date.now
+	// stay vi-fake-timer compatible). ALL timing (heartbeat, reconnect backoff+jitter) routes through it.
+	private readonly clock: Clock;
+
+	// Per-connection epoch: an AbortController scoping the heartbeat loop; aborted on close/reconnect
+	// (the TaskGroup analog).
+	private epoch: AbortController | null = null;
+	private heartbeat: HeartbeatMonitor | null = null;
+	// Handshake deadline: armed on open(), cancelled on connected (handleTransportOpen) or any epoch end
+	// (teardownEpoch). If it fires first, the handshake stalled → abort the attempt and reconnect.
+	private connectTimer: AbortController | null = null;
+
+	// Client-lifetime signal for the reconnect-backoff sleep; aborted by disconnect() to cancel a
+	// pending reconnect, re-created on a fresh connect() after a disconnect.
+	private shutdown = new AbortController();
 
 	// Network listeners
 	private boundHandleOnline: (() => void) | null = null;
@@ -84,21 +153,54 @@ export class SukkoClient extends TypedEventEmitter<SukkoClientEvents> {
 		super();
 
 		this.transport = options.transport;
+		this.clock = options.clock ?? new SystemClock();
 		this.options = {
-			token: options.token ?? "",
 			reconnect: options.reconnect ?? true,
-			reconnectAttempts: options.reconnectAttempts ?? SUKKO_DEFAULTS.RECONNECT_ATTEMPTS,
-			reconnectDelayBase: options.reconnectDelayBase ?? SUKKO_DEFAULTS.RECONNECT_DELAY_BASE,
-			reconnectDelayMax: options.reconnectDelayMax ?? SUKKO_DEFAULTS.RECONNECT_DELAY_MAX,
-			heartbeatInterval: options.heartbeatInterval ?? SUKKO_DEFAULTS.HEARTBEAT_INTERVAL,
-			heartbeatTimeout: options.heartbeatTimeout ?? SUKKO_DEFAULTS.HEARTBEAT_TIMEOUT,
-			staleConnectionThreshold:
-				options.staleConnectionThreshold ?? SUKKO_DEFAULTS.STALE_CONNECTION_THRESHOLD,
+			reconnectMaxAttempts: options.reconnectMaxAttempts ?? SUKKO_DEFAULTS.reconnectMaxAttempts,
+			backoffBaseMs: options.backoffBaseMs ?? SUKKO_DEFAULTS.backoffBaseMs,
+			backoffMaxMs: options.backoffMaxMs ?? SUKKO_DEFAULTS.backoffMaxMs,
+			heartbeatIntervalMs: options.heartbeatIntervalMs ?? SUKKO_DEFAULTS.heartbeatIntervalMs,
+			pongTimeoutMs: options.pongTimeoutMs ?? SUKKO_DEFAULTS.pongTimeoutMs,
+			staleConnectionThresholdMs:
+				options.staleConnectionThresholdMs ?? SUKKO_DEFAULTS.staleConnectionThresholdMs,
+			connectTimeoutMs: options.connectTimeoutMs ?? SUKKO_DEFAULTS.connectTimeoutMs,
 			autoConnect: options.autoConnect ?? true,
-			getToken: options.getToken,
+			bufferSize: options.bufferSize ?? SUKKO_DEFAULTS.bufferSize,
+			overflowPolicy: options.overflowPolicy ?? SUKKO_DEFAULTS.overflowPolicy,
+			historyLimit: options.historyLimit ?? SUKKO_DEFAULTS.historyLimit,
 		};
 
-		this.clientId = this.loadOrCreateClientId();
+		this.auth = new AuthManager({
+			token: options.token,
+			getToken: options.getToken,
+			send: (token) => this.send({ type: "auth", data: { token } }),
+			clock: this.clock,
+		});
+
+		this.deliveryQueue = new DeliveryQueue({
+			maxsize: this.options.bufferSize,
+			policy: this.options.overflowPolicy,
+			floor: this.options.historyLimit + SUKKO_DEFAULTS.maxReplayMessages,
+		});
+
+		// The gateway HTTP origin: explicit `baseUrl`, else derived from the transport's `url` (if it
+		// exposes one). The REST/push client reads the live credential fresh per request (rotation).
+		const httpBase =
+			options.baseUrl ??
+			(this.transport.url !== undefined ? httpBaseFromWs(this.transport.url) : undefined);
+		this.http =
+			httpBase !== undefined
+				? new HttpApi({
+						baseUrl: httpBase,
+						token: () => this.auth.currentToken,
+						clock: this.clock,
+						fetch: options.fetch,
+					})
+				: null;
+		this.pushClient = this.http !== null ? new PushClient(this.http) : null;
+
+		const clientId = this.loadOrCreateClientId();
+		this.recovery = new RecoveryEngine({ clientId, clock: this.clock });
 		this.setupTransportListeners();
 		this.setupNetworkListeners();
 
@@ -141,24 +243,141 @@ export class SukkoClient extends TypedEventEmitter<SukkoClientEvents> {
 		return this._state;
 	}
 
-	/** Active channel subscriptions. */
+	/** Active channel subscriptions — the desired set (what the caller asked for). */
 	get subscriptions(): ReadonlySet<string> {
-		return this._subscriptions;
+		return this._subscriptions.desiredChannels;
+	}
+
+	/**
+	 * Async iterator over the delivery stream — live and replayed messages, gap signals, and overflow
+	 * markers (`DeliveryItem`). This is the **authoritative, back-pressured** surface: on a capable
+	 * transport, a slow consumer here pauses receiving; on an incapable transport the queue applies its
+	 * overflow policy. **Single-consumer** — do not iterate concurrently. The stream ends when the
+	 * client disconnects. The `.on("message", …)` event surface remains as a non-back-pressured tap.
+	 */
+	async *messages(): AsyncGenerator<DeliveryItem> {
+		// Reject a second concurrent iterator BEFORE claiming ownership — otherwise its teardown would
+		// clear the first (legitimate) consumer's back-pressure flag, silently disabling pause/resume.
+		if (this.queueConsumer) {
+			throw new Error("messages() is single-consumer — only one iterator may be active at a time");
+		}
+		this.queueConsumer = true;
+		try {
+			for (;;) {
+				const result = await this.deliveryQueue.next();
+				if (result.done) return;
+				// Resume a paused capable transport as soon as the consumer has drained below capacity.
+				if (this.transportPaused && !this.deliveryQueue.isFull) {
+					this.transport.resume();
+					this.transportPaused = false;
+				}
+				yield result.value;
+			}
+		} finally {
+			this.queueConsumer = false;
+			if (this.transportPaused) {
+				this.transport.resume();
+				this.transportPaused = false;
+			}
+		}
+	}
+
+	/**
+	 * Push a delivery item onto the queue and, when an active `messages()` consumer is present on a
+	 * capable transport, pause receiving once the buffer is full (real back-pressure). With no active
+	 * iterator consumer the queue simply applies its overflow policy — the emitter tap is never stalled.
+	 */
+	private enqueue(item: DeliveryItem): void {
+		this.deliveryQueue.push(item);
+		if (
+			this.queueConsumer &&
+			this.transport.capabilities.canPauseReceive &&
+			this.deliveryQueue.isFull &&
+			!this.transportPaused
+		) {
+			this.transport.pause();
+			this.transportPaused = true;
+		}
 	}
 
 	/** Connect to the server via the transport. */
 	connect(): void {
 		if (this.transport.state === "opening" || this.transport.state === "open") return;
 
+		// A connect-time-subscribe transport (SSE, `canSubscribe: false`) carries its channel set in the
+		// request URL, so with nothing subscribed there is nothing to open — connecting is a benign no-op
+		// that resolves once `subscribe()` runs (which drives the open on such a transport). This is NOT a
+		// throw on purpose: `connect()` is invoked fire-and-forget from the online/visibility listeners and
+		// the backoff reconnect, where a thrown config error would escape uncaught (§XI, no silent failure —
+		// idle-until-subscribed is an explicit, documented state, not a swallowed error).
+		const connectTimeChannels = !this.transport.capabilities.canSubscribe;
+		if (connectTimeChannels && this._subscriptions.desiredChannels.size === 0) {
+			return;
+		}
+
+		this.userDisconnected = false;
 		this.setState("connecting");
-		this.clearTimers();
-		this.transport.setToken(this.options.token);
+		// Cancel any pending reconnect backoff and open a fresh cancellation scope for this connection —
+		// any "start a connection" path (connect / forceReconnect / a reconnect firing) supersedes an
+		// in-flight backoff, so no orphaned sleeper survives (§XI deterministic teardown).
+		this.shutdown.abort();
+		this.shutdown = new AbortController();
+		this.teardownEpoch(); // abort any stale epoch before opening a fresh one
+		this.epoch = new AbortController();
+		this.transport.setToken(this.auth.currentToken ?? "");
+		// Feed the current desired set in before opening (the mirror of setToken; §XV: the desired set is
+		// the single source of truth, so a reconnect resumes exactly what is wanted). WebSocket no-ops
+		// setChannels and subscribes via frames after open.
+		if (connectTimeChannels) {
+			this.transport.setChannels(Array.from(this._subscriptions.desiredChannels));
+		}
 		this.transport.open();
+		this.armConnectTimeout();
+	}
+
+	/**
+	 * Arm the per-attempt handshake deadline. If the transport does not reach `connected` within
+	 * `connectTimeoutMs`, the attempt is aborted and reconnected (backoff). This is the transport-agnostic
+	 * §II backstop: the WebSocket and SSE transports carry their own connect timeouts, but a transport's
+	 * own failure routes through `teardownEpoch` and cancels this timer first — so the client deadline only
+	 * fires for a transport that stalls without self-timing-out (a custom transport, or one configured
+	 * with a longer deadline).
+	 */
+	private armConnectTimeout(): void {
+		this.connectTimer?.abort();
+		const timer = new AbortController();
+		this.connectTimer = timer;
+		void this.runConnectTimeout(timer.signal);
+	}
+
+	private async runConnectTimeout(signal: AbortSignal): Promise<void> {
+		try {
+			await this.clock.sleep(this.options.connectTimeoutMs, signal);
+		} catch {
+			return; // cancelled — the handshake completed (handleTransportOpen) or the epoch was torn down
+		}
+		// The sleep can settle in the same turn the transport opens; the abort in handleTransportOpen cannot
+		// un-settle an already-resolved promise, so re-validate before acting (mirrors the reactive-auth
+		// post-await recheck, §XVIII).
+		if (this.transport.state === "open") return;
+		this.handleConnectTimeout();
+	}
+
+	/** The handshake stalled past `connectTimeoutMs`: tear down the stuck attempt and reconnect with
+	 * backoff, so a stalled connect counts as a failed attempt and eventually exhausts to terminal. */
+	private handleConnectTimeout(): void {
+		this.onConnectionLost();
+		this.teardownEpoch();
+		this.transport.close(); // client-initiated close does not echo — no reconnect via handleTransportClose
+		void this.handleReconnect();
 	}
 
 	/** Disconnect intentionally (no automatic reconnection). */
 	disconnect(): void {
-		this.clearTimers();
+		this.userDisconnected = true; // an explicit disconnect: subscribe() must not silently resurrect it
+		this.shutdown.abort(); // cancel any pending reconnect backoff
+		this.onConnectionLost();
+		this.teardownEpoch();
 
 		// Remove transport close listener before closing to prevent
 		// duplicate state/event emission from the close handler.
@@ -168,6 +387,12 @@ export class SukkoClient extends TypedEventEmitter<SukkoClientEvents> {
 
 		this.setState("disconnected");
 		this.emit("close", CLOSE_CODES.NORMAL, "Client disconnect");
+
+		// Release any parked messages() consumer — client-lifetime queue ends on disconnect (§XI teardown).
+		// NOTE: the queue is not revived by a later connect() in this phase; the full connect/disconnect/
+		// close vs reconnect-epoch lifecycle (queue survival across epochs) is defined by the T026
+		// supervisor rewrite. Automatic reconnect (handleTransportClose) deliberately does NOT close it.
+		this.deliveryQueue.close();
 	}
 
 	// ---------------------------------------------------------------------------
@@ -176,22 +401,46 @@ export class SukkoClient extends TypedEventEmitter<SukkoClientEvents> {
 
 	/** Subscribe to one or more channels. */
 	subscribe(channels: string[]): void {
-		for (const ch of channels) this._subscriptions.add(ch);
+		this._subscriptions.addDesired(channels);
 
-		if (this.transport.state === "open") {
-			this.send({ type: "subscribe", data: { channels } });
+		if (this.transport.capabilities.canSubscribe) {
+			if (this.transport.state === "open") {
+				this.send({ type: "subscribe", data: { channels } });
+			}
+			return;
+		}
+		// Connect-time-subscribe transport (SSE): the channel set lives in the request URL. If a stream is
+		// live, reconnect it with the new set (resumes via Last-Event-ID); if none is open yet, open one —
+		// on such a transport subscribing IS what starts/updates the stream. After a deliberate disconnect()
+		// (queue closed), only record the intent: reopening would feed a dead delivery queue.
+		if (this.transport.state !== "closed") {
+			this.forceReconnect();
+		} else if (!this.userDisconnected) {
+			this.connect();
 		}
 	}
 
 	/** Unsubscribe from one or more channels. */
 	unsubscribe(channels: string[]): void {
-		for (const ch of channels) {
-			this._subscriptions.delete(ch);
-			this.lastPos.delete(ch);
-		}
+		this._subscriptions.remove(channels);
+		for (const ch of channels) this.recovery.forget(ch);
 
-		if (this.transport.state === "open") {
-			this.send({ type: "unsubscribe", data: { channels } });
+		if (this.transport.capabilities.canSubscribe) {
+			if (this.transport.state === "open") {
+				this.send({ type: "unsubscribe", data: { channels } });
+			}
+			return;
+		}
+		// Connect-time-subscribe transport (SSE): reconnect with the reduced set. Unsubscribing the LAST
+		// channel leaves nothing to stream (an SSE request needs ≥1 channel), so close the STREAM (not the
+		// client) — this keeps the delivery queue alive so a later subscribe() reopens and resumes it,
+		// unlike disconnect() which is the terminal client teardown.
+		if (this.transport.state !== "closed") {
+			if (this._subscriptions.desiredChannels.size === 0) {
+				this.closeStream();
+			} else {
+				this.forceReconnect();
+			}
 		}
 	}
 
@@ -199,63 +448,145 @@ export class SukkoClient extends TypedEventEmitter<SukkoClientEvents> {
 	// Public API — Publishing
 	// ---------------------------------------------------------------------------
 
-	/** Publish a message to a channel. */
-	publish(channel: string, data: unknown): void {
-		if (this.transport.state === "open") {
-			this.send({ type: "publish", data: { channel, data } });
+	/** Publish a JSON object to a channel. `data` must be an object — the contract's publish payload
+	 * (`PublishData.data`) is `type: object`, so a bare scalar is not a valid message body. */
+	publish(channel: string, data: JsonObject): void {
+		if (this.transport.capabilities.canPublish) {
+			if (this.transport.state === "open") {
+				this.send({ type: "publish", data: { channel, data } });
+			}
+			return;
 		}
+		// A receive-only transport (SSE) has no client→server publish frame — route over REST (Scenario
+		// 4.3). §XII prior art: the WHATWG SSE / EventSource model is GET-only with no request body, so
+		// every SSE client (native EventSource, Ably, Centrifugo) publishes out-of-band over HTTP, not on
+		// the stream. `publish` is fire-and-forget (void), so it cannot reject; a REST failure surfaces on
+		// the `publishError` event rather than floating unhandled (§XI — no silent drop, no orphan promise).
+		void this.restPublish(channel, data).catch((err: unknown) => {
+			this.emit("publishError", publishErrorFromRest(err));
+		});
+	}
+
+	/**
+	 * Publish over REST — awaitable, and works WITHOUT a live WebSocket connection (Pro-gated; a
+	 * Community license rejects with `EditionRequiredError`). Distinct from the fire-and-forget `publish`
+	 * over WS: this resolves on the gateway's ack and rejects typed on failure. Requires a resolvable
+	 * gateway HTTP origin (the `baseUrl` option or a transport exposing a `url`).
+	 */
+	async restPublish(channel: string, data: JsonObject): Promise<void> {
+		if (this.http === null) {
+			throw new ConfigurationError(
+				"restPublish requires the `baseUrl` option (or a transport exposing a `url`)",
+			);
+		}
+		await this.http.request("POST", "/api/v1/publish", { json: { channel, data } });
+	}
+
+	// ---------------------------------------------------------------------------
+	// Public API — Push
+	// ---------------------------------------------------------------------------
+
+	/** The Enterprise-gated push subscription-management namespace (`subscribe`/`unsubscribe`/
+	 * `getVapidKey`). Throws `ConfigurationError` if no gateway HTTP origin is resolvable. */
+	get push(): PushClient {
+		if (this.pushClient === null) {
+			throw new ConfigurationError(
+				"push requires the `baseUrl` option (or a transport exposing a `url`)",
+			);
+		}
+		return this.pushClient;
+	}
+
+	// ---------------------------------------------------------------------------
+	// Public API — History
+	// ---------------------------------------------------------------------------
+
+	/**
+	 * Request up to `limit` historical messages for a subscribed `channel` (default `historyLimit`).
+	 * They arrive on `messages()` as `Message`s with `history: true`, terminated by a `history_complete`
+	 * (Pro + `WS_HISTORY_ENABLED` gated — otherwise a `historyError` event fires). Unlike the fire-and-
+	 * forget `publish`/`subscribe`, this validates and THROWS: `NotConnectedError` when disconnected,
+	 * `TransportError` on a transport with no client→server channel (history is WS-only), and
+	 * `ConfigurationError` when `limit` exceeds `historyLimit`. Validate first, then arm the detection
+	 * deadline, then send — a thrown error must never leave a phantom deadline armed.
+	 */
+	history(channel: string, limit?: number): void {
+		if (this.transport.state !== "open") {
+			throw new NotConnectedError("history() requires an open connection");
+		}
+		if (!this.transport.capabilities.canSend) {
+			throw new TransportError(
+				"history() requires a WebSocket transport — this transport cannot send",
+			);
+		}
+		const effective = limit ?? this.options.historyLimit;
+		// The contract declares `limit` an integer in [1, WS_HISTORY_MAX_LIMIT]; validate BOTH bounds
+		// client-side (§II — never assume upstream validation) so a bad value fails fast instead of a
+		// wasted round trip bounced back as `history_invalid_limit`.
+		if (!Number.isInteger(effective) || effective < 1) {
+			throw new ConfigurationError(`history limit must be a positive integer, got ${effective}`);
+		}
+		if (effective > this.options.historyLimit) {
+			throw new ConfigurationError(
+				`history limit ${effective} exceeds the client historyLimit ${this.options.historyLimit}`,
+			);
+		}
+		this.recovery.noteHistoryRequest(channel);
+		this.wakeRecovery();
+		this.send({ type: "history", data: { channel, limit: effective } });
 	}
 
 	// ---------------------------------------------------------------------------
 	// Public API — Token
 	// ---------------------------------------------------------------------------
 
-	/** Update the stored token (used for future connections). */
+	/** Set the credential for the next connection WITHOUT sending `auth` (offline; preserves grants). */
 	updateToken(token: string): void {
-		this.options.token = token;
+		this.auth.updateToken(token);
 	}
 
 	/**
-	 * Refresh the token mid-connection.
-	 * Calls the `getToken` callback, updates the stored token,
-	 * and sends an `auth` message to the server.
+	 * Refresh the token mid-connection (single-flight): send a fresh `auth` frame and await its ack.
+	 * Concurrent calls coalesce onto the same in-flight refresh. Rejects if the refresh is rejected or
+	 * the connection drops. Preserves subscriptions. Requires an open connection — offline, use
+	 * `updateToken()` and let the next reconnect present the token.
 	 */
 	async refreshToken(): Promise<void> {
-		if (!this.options.getToken) {
-			throw new Error("Cannot refresh token: no getToken callback configured");
+		if (this.transport.state !== "open") {
+			throw new NotConnectedError("cannot refresh token while disconnected");
 		}
-
-		const token = await this.options.getToken();
-		this.options.token = token;
-
-		if (this.transport.state === "open") {
-			this.send({ type: "auth", data: { token } });
+		// Proactive refresh sends an `auth` frame and awaits its `auth_ack` — a receive-only transport
+		// (SSE) has neither, so awaiting would hang forever. SSE refreshes REACTIVELY on a drop/401; a
+		// proactive call is WS-only. Update the credential offline instead and let the next stream carry it.
+		if (!this.transport.capabilities.canSend) {
+			throw new TransportError(
+				"refreshToken() is WebSocket-only — SSE refreshes reactively on reconnect; use updateToken()",
+			);
 		}
+		await this.auth.refresh();
 	}
 
-	// ---------------------------------------------------------------------------
-	// Public API — Replay
-	// ---------------------------------------------------------------------------
-
-	/** Send a reconnect-with-replay request using last-known pos values per channel. */
-	reconnectWithReplay(): void {
-		if (this.transport.state !== "open") return;
-		if (this.lastPos.size === 0) return;
-
-		const lastPos: Record<string, string> = {};
-		this.lastPos.forEach((pos, channel) => {
-			lastPos[channel] = pos;
-		});
-
-		this.send({
-			type: "reconnect",
-			data: { client_id: this.clientId, last_pos: lastPos },
-		});
-	}
-
-	/** Reset the reconnect attempt counter. */
-	resetReconnectAttempts(): void {
-		this.reconnectAttempt = 0;
+	/**
+	 * Escalate an api-key connection to a JWT: send the new token and, on success, re-subscribe the
+	 * channels the api-key was not granted (the not-granted delta, FR-009). While disconnected it stores
+	 * the JWT for the next connection. Distinct from `refreshToken()`, which preserves grants; escalation
+	 * never coalesces onto an in-flight refresh (it sends its own frame).
+	 */
+	async escalate(jwt: string): Promise<void> {
+		// SSE has no in-band `auth` frame (escalate-and-await-ack would hang) and no `subscribe` frame:
+		// escalation is by stream reconnect with the new JWT (spec.md §240, FR-010). Store the credential,
+		// then reconnect so the fresh stream presents it (Last-Event-ID resume); the reopen's PossibleGap
+		// covers any not-granted channels the api-key had filtered.
+		if (!this.transport.capabilities.canSend) {
+			this.auth.updateToken(jwt);
+			if (this.transport.state !== "closed") this.forceReconnect();
+			return;
+		}
+		const escalated = await this.auth.escalate(jwt, this.transport.state === "open");
+		if (escalated) {
+			const delta = this._subscriptions.notGranted();
+			if (delta.length > 0) this.send({ type: "subscribe", data: { channels: delta } });
+		}
 	}
 
 	// ---------------------------------------------------------------------------
@@ -286,35 +617,109 @@ export class SukkoClient extends TypedEventEmitter<SukkoClientEvents> {
 	}
 
 	private handleTransportOpen(): void {
+		this.connectTimer?.abort(); // handshake completed — cancel the deadline
+		this.connectTimer = null;
 		this.setState("connected");
 		this.reconnectAttempt = 0;
 		this.lastActivityTimestamp = Date.now();
 		this.startHeartbeat();
 
-		// Restore subscriptions
-		if (this._subscriptions.size > 0) {
-			this.send({
-				type: "subscribe",
-				data: { channels: Array.from(this._subscriptions) },
-			});
+		// A receive-only transport (SSE) has no client→server channel: no pos-replay `reconnect` frame, no
+		// in-band resubscribe (channels rode the connect-time URL, applied in connect()). Its only recovery
+		// signal is a synthetic PossibleGap — on any REOPEN, live replay cannot be confirmed (there is no
+		// ack, and Last-Event-ID resume is best-effort), so surface one per desired channel rather than
+		// silently resuming live-only (Scenario 4.5, FR-007's no-silent-drop invariant on the SSE path).
+		if (!this.transport.capabilities.canSend) {
+			if (this.hasConnectedBefore) {
+				for (const channel of this._subscriptions.desiredChannels) {
+					this.enqueue({ type: "possible_gap", channel });
+				}
+			}
+			this.hasConnectedBefore = true;
+			return;
+		}
+		this.startRecoveryTimer();
+
+		// Reconnect-with-replay (resume from stored pos on Kafka) or the Direct-probe — but only from the
+		// SECOND connection onward. `buildReconnect()` reads `connectedOnce` BEFORE `markConnected()`
+		// arms it, so the genuine first open sends no `reconnect` frame (a probe against a server with no
+		// session would falsely elicit `not_available` and wrongly degrade a Kafka client to Direct).
+		const reconnect = this.recovery.buildReconnect();
+		this.recovery.markConnected();
+		if (reconnect) this.applyRecoveryActions([reconnect]);
+
+		// Restore subscriptions (live flow resumes independently of the pos-replay above) — the full
+		// desired set; grants were cleared on disconnect so the server re-grants against the new epoch.
+		const desired = Array.from(this._subscriptions.desiredChannels);
+		if (desired.length > 0) {
+			this.send({ type: "subscribe", data: { channels: desired } });
 		}
 	}
 
+	/**
+	 * Handles a SERVER or network-initiated close. Client-initiated closes (disconnect, forceReconnect,
+	 * heartbeat timeout) do NOT reach here — the transport suppresses their close echo — so a 4000 seen
+	 * here is always an operator `force_disconnect` (remote), never a local heartbeat timeout.
+	 */
 	private handleTransportClose(code: number, reason: string): void {
-		this.stopHeartbeat();
+		this.onConnectionLost();
+		this.teardownEpoch();
 		this.emit("close", code, reason);
 
-		switch (code) {
-			case CLOSE_CODES.NORMAL:
-			case CLOSE_CODES.GOING_AWAY:
-				this.setState("disconnected");
-				return;
-			default:
-				if (this.options.reconnect) {
-					this.handleReconnect();
-				} else {
-					this.setState("disconnected");
-				}
+		// Reactive auth on a receive-only transport (SSE): a 401 handshake surfaces as UNAUTHORIZED (4001).
+		// The credential was rejected, so a plain reconnect would just re-fail; refresh via `getToken` then
+		// reconnect with backoff (FR-010, Scenario 3.4). Gated on `!canSend` — only SSE emits this; a WS
+		// transport reactively refreshes via in-band `auth_error` frames, so a stray 4001 there falls
+		// through to a plain transient reconnect.
+		if (code === CLOSE_CODES.UNAUTHORIZED && !this.transport.capabilities.canSend) {
+			void this.handleReactiveAuthReconnect();
+			return;
+		}
+		// Per-close-code reconnect policy (FR-019).
+		if (
+			code === CLOSE_CODES.NORMAL || // 1000 clean shutdown
+			code === CLOSE_CODES.POLICY_VIOLATION || // 1008 policy violation — not transient
+			code === CLOSE_CODES.FORCE_DISCONNECT // 4000 operator force-disconnect — terminal
+		) {
+			// TODO(T026): 1008 and force_disconnect should also surface a TYPED error on the error channel
+			// (FR-019 / Scenario 6 AC2). Deferred to the supervisor rewrite that builds that channel —
+			// until then the terminal cause is observable via the `close` event's code (emitted above).
+			this.setState("disconnected");
+			return;
+		}
+		// 1001 going-away, 1011 internal-error, 1006/abnormal, unknown → transient, reconnect with backoff.
+		void this.handleReconnect();
+	}
+
+	/**
+	 * SSE reactive auth: a 401 handshake means the current credential was rejected. Without a `getToken`
+	 * source there is nothing to try (a static token would only be re-rejected) — go terminal rather than
+	 * loop the dead credential forever (matching the 1008/4000 terminal path — `disconnected`, not `error`,
+	 * which is reserved for exhausted attempts). With `getToken`, fetch a fresh credential and reconnect
+	 * through the backoff path so a getToken that keeps returning a bad token cannot form a tight loop.
+	 */
+	private async handleReactiveAuthReconnect(): Promise<void> {
+		if (!this.auth.canFetchFreshToken) {
+			this.setState("disconnected");
+			return;
+		}
+		try {
+			await this.auth.fetchFreshToken();
+		} catch {
+			// getToken failed (e.g. transient network) — reconnect with the old token anyway; the retry hits
+			// 401 again and backs off further, so this is self-limiting, never an uncaught rejection (§XI).
+		}
+		// getToken is a user network call — the world can change across the await. Re-validate that a
+		// reconnect is still wanted: the stream is still down (a concurrent connect()/forceReconnect() may
+		// have re-established it), the user has not disconnect()-ed (which closed the delivery queue), and
+		// there is still something subscribed (unsubscribe-all → closeStream() may have emptied it). Missing
+		// any of these, entering handleReconnect() would strand the client in a spurious "reconnecting".
+		if (
+			this.transport.state === "closed" &&
+			!this.userDisconnected &&
+			this._subscriptions.desiredChannels.size > 0
+		) {
+			void this.handleReconnect();
 		}
 	}
 
@@ -340,73 +745,192 @@ export class SukkoClient extends TypedEventEmitter<SukkoClientEvents> {
 		}
 	}
 
+	/**
+	 * Immediately close and reopen the connection (no backoff, attempt counter reset). The single
+	 * intentional-restart primitive: a stale-connection network-listener trip, and — for a connect-time
+	 * transport (SSE) — applying a changed channel set (subscribe/unsubscribe) or a fresh escalation JWT,
+	 * since those ride the connect-time request rather than an in-band frame. Client-initiated close does
+	 * not echo, so this never enters the backoff/`handleTransportClose` path.
+	 */
 	private forceReconnect(): void {
-		this.clearTimers();
-		this.resetReconnectAttempts();
+		this.reconnectAttempt = 0;
+		this.onConnectionLost(); // the transport closes with no echo here — flush recovery state directly
 		this.transport.close();
-		this.connect();
+		this.connect(); // teardownEpoch + fresh epoch handled inside connect() (re-applies token + channels)
+	}
+
+	/**
+	 * Close the transport stream without tearing down the client (unlike disconnect(), the delivery queue
+	 * stays open). Used when a connect-time transport (SSE) has nothing left to stream — every channel
+	 * unsubscribed — so a later subscribe() can reopen and resume the same `messages()` consumer. Client-
+	 * initiated close does not echo, so this does not enter the reconnect/backoff path.
+	 */
+	private closeStream(): void {
+		this.onConnectionLost();
+		this.teardownEpoch();
+		this.transport.close();
+		this.setState("disconnected");
 	}
 
 	private handleMessage(data: string): void {
 		this.lastActivityTimestamp = Date.now();
 
-		// Any message from server clears pong timeout
-		if (this.pongTimeout) {
-			clearTimeout(this.pongTimeout);
-			this.pongTimeout = null;
-		}
+		// Any inbound frame confirms liveness for the heartbeat monitor.
+		this.heartbeat?.noteActivity();
 
 		try {
 			const raw = JSON.parse(data) as { type: string };
 
 			switch (raw.type) {
 				case "message": {
-					const msg = raw as unknown as DataMessage;
-					if (msg.pos) {
-						this.lastPos.set(msg.channel, msg.pos);
+					const msg = raw as unknown as Message;
+					if (msg.history === true) {
+						// A history backfill frame — reset the history idle deadline. Do NOT notePos: history
+						// positions are OLDER than the live anchor (last-N backfill), and the engine can't
+						// compare opaque pos, so noting one would move the reconnect anchor backward and cause
+						// re-delivery. (Correction over the sukko-py reference, which notes pos for all frames.)
+						this.recovery.handleHistoryMessage(msg.channel);
+						this.wakeRecovery();
+					} else {
+						this.recovery.notePos(msg.channel, msg.pos); // anchor for the next reconnect-replay
 					}
-					this.emit("message", msg);
+					this.emit("message", msg); // pre-queue tap (multicast, non-back-pressured)
+					this.enqueue(msg); // authoritative delivery stream
 					break;
 				}
-				case "subscription_ack":
-					this.emit("subscriptionAck", raw as unknown as SubscriptionAckMessage);
+				case "gap": {
+					// A live gap. Surface the loss signal to the consumer FIRST, then let the engine decide
+					// whether/when to replay (immediate, floor-wait, or ignored once Direct).
+					const gap = raw as unknown as Gap;
+					// `channel` and `last_pos` are both contract-required and both drive an outbound `replay`
+					// frame — a gap missing either would anchor a replay from `undefined` and emit a malformed
+					// frame (the missing key silently dropped by JSON.stringify). Drop-and-continue (FR-025/§II).
+					if (typeof gap.channel !== "string" || typeof gap.last_pos !== "string") break;
+					this.enqueue(gap);
+					this.applyRecoveryActions(this.recovery.handleGap(gap.channel, gap.last_pos));
+					this.wakeRecovery();
 					break;
-				case "unsubscription_ack":
-					this.emit("unsubscriptionAck", raw as unknown as UnsubscriptionAckMessage);
+				}
+				case "replay_message": {
+					const rm = raw as unknown as ReplayMessage;
+					this.recovery.notePos(rm.channel, rm.pos);
+					this.recovery.handleReplayMessage(rm.channel); // reset the per-frame idle deadline (fix #3)
+					this.enqueue(rm);
+					this.wakeRecovery();
 					break;
+				}
+				case "replay_complete": {
+					const rc = raw as unknown as ReplayComplete;
+					this.applyRecoveryActions(this.recovery.handleReplayComplete(rc.channel));
+					this.wakeRecovery();
+					break;
+				}
+				case "history_complete": {
+					// The history backfill finished — clear its detection deadline. History frames are
+					// delivered inline on messages() (flagged `history: true`); there is no separate terminator.
+					this.recovery.handleHistoryComplete((raw as unknown as HistoryComplete).channel);
+					this.wakeRecovery();
+					break;
+				}
+				case "history_error": {
+					// The history request was rejected. `history_in_progress` is special: it rejects a DUPLICATE
+					// request while the ORIGINAL backfill is still streaming, so its detection deadline MUST stay
+					// armed (clearing it would silently disarm the still-running request's stall watchdog). Any
+					// other code means this channel's history genuinely failed → clear the deadline so it can't
+					// later fire a spurious RecoveryInterrupted. Either way, surface the typed error.
+					const err = raw as unknown as HistoryError;
+					if (err.code !== "history_in_progress") {
+						this.recovery.handleHistoryComplete(err.channel);
+						this.wakeRecovery();
+					}
+					this.emit("historyError", err);
+					break;
+				}
+				case "subscription_ack": {
+					const ack = raw as unknown as SubscriptionAck;
+					this._subscriptions.markGranted(ack.subscribed); // the server granted these
+					this.emit("subscriptionAck", ack);
+					break;
+				}
+				case "unsubscription_ack": {
+					// A `forced` unsubscription (auth/permission change) drops the grant but KEEPS the channel
+					// desired, so a later escalation re-subscribes it via the not-granted delta. A caller-
+					// initiated unsubscribe already dropped it from both sets in `unsubscribe()`.
+					const ack = raw as unknown as UnsubscriptionAck;
+					if (ack.forced === true) this._subscriptions.markForcedUngranted(ack.unsubscribed);
+					this.emit("unsubscriptionAck", ack);
+					break;
+				}
 				case "publish_ack":
-					this.emit("publishAck", raw as unknown as PublishAckMessage);
+					this.emit("publishAck", raw as unknown as PublishAck);
 					break;
 				case "publish_error":
-					this.emit("publishError", raw as unknown as PublishErrorMessage);
+					this.emit("publishError", raw as unknown as PublishError);
 					break;
 				case "reconnect_ack":
-					this.emit("reconnectAck", raw as unknown as ReconnectAckMessage);
+					this.emit("reconnectAck", raw as unknown as ReconnectAck);
 					break;
-				case "reconnect_error":
-					this.emit("reconnectError", raw as unknown as ReconnectErrorMessage);
+				case "reconnect_error": {
+					// `not_available` is the Direct-backend capability signal, not a retryable error: degrade
+					// to resubscribe and surface one synthetic PossibleGap per channel. Any other code is a
+					// genuine reconnect failure → the typed event.
+					const err = raw as unknown as ReconnectError;
+					if (err.code === "not_available") {
+						this.applyRecoveryActions(
+							this.recovery.handleNotAvailable(Array.from(this._subscriptions.desiredChannels)),
+						);
+						this.wakeRecovery();
+					} else {
+						this.emit("reconnectError", err);
+					}
 					break;
+				}
 				case "pong":
-					this.emit("pong", raw as unknown as PongMessage);
+					this.emit("pong", raw as unknown as Pong);
 					break;
-				case "error":
-					this.emit("error", raw as unknown as ErrorMessage);
+				case "error": {
+					// A channel-scoped replay/recovery error code means an in-flight replay failed: reset that
+					// channel's FSM and raise a single RecoveryInterrupted (never a stray error now plus a
+					// deadline-fired one later). Everything else is a plain protocol error → the typed event.
+					const err = raw as unknown as ErrorMessage;
+					if (err.channel !== undefined && REPLAY_ERROR_CODES.includes(err.code)) {
+						this.applyRecoveryActions(this.recovery.handleRecoveryFailure(err.channel, err.code));
+						this.wakeRecovery();
+					} else {
+						this.emit("error", err);
+					}
 					break;
+				}
 				case "subscribe_error":
-					this.emit("subscribeError", raw as unknown as SubscribeErrorMessage);
+					this.emit("subscribeError", raw as unknown as SubscribeError);
 					break;
 				case "unsubscribe_error":
-					this.emit("unsubscribeError", raw as unknown as UnsubscribeErrorMessage);
+					this.emit("unsubscribeError", raw as unknown as UnsubscribeError);
 					break;
-				case "auth_ack":
-					this.emit("authAck", raw as unknown as AuthAckMessage);
+				case "auth_ack": {
+					// Resolve any in-flight refresh, reset backoff, and (re)arm the proactive timer from exp.
+					const ack = raw as unknown as AuthAck;
+					this.auth.onAuthAck(ack.data.exp);
+					this.emit("authAck", ack);
 					break;
-				case "auth_error":
-					this.emit("authError", raw as unknown as AuthErrorMessage);
+				}
+				case "auth_error": {
+					// An UNSOLICITED auth_error (no refresh in flight) triggers a reactive refresh; one that
+					// resolves our own in-flight refresh must NOT loop (the AuthManager returns false then).
+					const err = raw as unknown as AuthError;
+					if (this.auth.onAuthError(err.data.code, err.data.message)) {
+						void this.auth.reactiveRefresh();
+					}
+					this.emit("authError", err);
+					break;
+				}
+				default:
+					// Unknown/future message type — drop and continue for forward-compatibility (FR-025);
+					// never kill the read-pump.
 					break;
 			}
 		} catch {
-			// Silently ignore unparseable messages
+			// Malformed (non-JSON) frame — drop and continue; the read-pump must survive it (FR-025).
 		}
 	}
 
@@ -414,67 +938,175 @@ export class SukkoClient extends TypedEventEmitter<SukkoClientEvents> {
 	// Internal — Reconnection
 	// ---------------------------------------------------------------------------
 
-	private handleReconnect(): void {
-		if (!this.options.reconnect) return;
-
-		if (this.reconnectAttempt >= this.options.reconnectAttempts) {
-			// Phase 2: indefinite retry at max delay
-			this.setState("error");
-			this.emit("reconnecting", this.reconnectAttempt);
-
-			const delay = this.options.reconnectDelayMax + Math.random() * 1000;
-			this.reconnectTimer = setTimeout(() => this.connect(), delay);
+	private async handleReconnect(): Promise<void> {
+		if (!this.options.reconnect) {
+			this.setState("disconnected");
 			return;
 		}
 
-		// Phase 1: exponential backoff with jitter
+		// `reconnectMaxAttempts === 0` means unlimited; otherwise, once attempts are exhausted the client
+		// gives up and enters the terminal `error` state — no indefinite retry (FR-018/FR-026).
+		const unlimited = this.options.reconnectMaxAttempts === 0;
+		if (!unlimited && this.reconnectAttempt >= this.options.reconnectMaxAttempts) {
+			this.setState("error");
+			return;
+		}
+
 		this.setState("reconnecting");
 		this.reconnectAttempt++;
 
-		const delay = Math.min(
-			this.options.reconnectDelayBase * 2 ** (this.reconnectAttempt - 1) + Math.random() * 1000,
-			this.options.reconnectDelayMax,
+		// Full Jitter (AWS): delay = random(0, min(cap, base * 2^(attempt-1))). Jitter is the whole
+		// point — pure exponential without it causes lock-step reconnect storms.
+		const ceiling = Math.min(
+			this.options.backoffMaxMs,
+			this.options.backoffBaseMs * 2 ** (this.reconnectAttempt - 1),
 		);
+		const delay = this.clock.rng() * ceiling;
 
 		this.emit("reconnecting", this.reconnectAttempt);
-		this.reconnectTimer = setTimeout(() => this.connect(), delay);
+		try {
+			await this.clock.sleep(delay, this.shutdown.signal);
+		} catch {
+			return; // the backoff sleep was aborted (disconnect / a superseding connect) — stop here
+		}
+		// Outside the try so a synchronous connect()/transport.open() throw surfaces, not swallowed (§III).
+		this.connect();
+	}
+
+	// ---------------------------------------------------------------------------
+	// Internal — Recovery
+	// ---------------------------------------------------------------------------
+
+	/** Execute the canonical actions the RecoveryEngine returns: send frames, enqueue signals, emit errors. */
+	private applyRecoveryActions(actions: RecoveryAction[]): void {
+		for (const action of actions) {
+			switch (action.action) {
+				case "send_replay":
+					this.send({
+						type: "replay",
+						data: { channel: action.channel, from_pos: action.from_pos },
+					});
+					break;
+				case "send_reconnect":
+					this.send({
+						type: "reconnect",
+						data: { client_id: action.client_id, last_pos: action.last_pos },
+					});
+					break;
+				case "emit_possible_gap":
+					this.enqueue({ type: "possible_gap", channel: action.channel });
+					break;
+				case "raise_recovery_interrupted":
+					this.emit(
+						"recoveryInterrupted",
+						new RecoveryInterruptedError(action.reason, action.channel),
+					);
+					break;
+			}
+		}
+	}
+
+	/**
+	 * A connection dropped. Any channel mid-recovery is a truncated recovery → RecoveryInterrupted
+	 * (advisory; the next reconnect-replay may still recover it). `pos` and `client_id` persist for that
+	 * reconnect-replay. Auth's pending refresh is failed and its proactive timer cancelled, and granted
+	 * subscription state is cleared (desired persists) so the next epoch re-grants from scratch. Called
+	 * from every connection-loss path (close, heartbeat timeout, forced reconnect, intentional disconnect).
+	 */
+	private onConnectionLost(): void {
+		this.applyRecoveryActions(this.recovery.handleDisconnect());
+		this.auth.close();
+		this._subscriptions.clearGranted();
+	}
+
+	/** Wake the recovery timer so it recomputes its next deadline after the engine's state changed. */
+	private wakeRecovery(): void {
+		this.recoveryWake.abort();
+		this.recoveryWake = new AbortController();
+	}
+
+	/** Start the per-epoch recovery timer (fires due floor-waits + deadlines until the epoch aborts). */
+	private startRecoveryTimer(): void {
+		if (!this.epoch) return;
+		// Guarded like the heartbeat loop: a transport-agnostic send throw during action dispatch must
+		// not become an unhandled rejection. Surfaces to the SDK logger once wired (parallel to _redact).
+		void this.runRecoveryTimer(this.epoch.signal).catch(() => {});
+	}
+
+	/**
+	 * Drive the engine's clock-based timers: fire floor-waits whose floor has elapsed (→ `send_replay`)
+	 * and raise RecoveryInterrupted past a detection deadline. Parks on the injected clock until the next
+	 * deadline, or on the `recoveryWake` condvar when nothing is pending / new work arrives — so it costs
+	 * nothing on an idle connection. Exits cleanly when the epoch aborts (§XI deterministic teardown).
+	 */
+	private async runRecoveryTimer(epochSignal: AbortSignal): Promise<void> {
+		for (;;) {
+			if (epochSignal.aborted) return;
+			// Capture the wake signal BEFORE reading the deadline: a wake fired after this read aborts the
+			// captured signal, and `anySignal` propagates an already-aborted source, so the wait below
+			// returns at once and recomputes — no lost wakeup (single-threaded: no wake can land between the
+			// capture and the park, so no explicit re-check is needed here).
+			const wakeSignal = this.recoveryWake.signal;
+			const deadline = this.recovery.nextDeadline();
+			const now = this.clock.now();
+			if (deadline !== null && deadline <= now) {
+				this.applyRecoveryActions(this.recovery.due());
+				continue;
+			}
+
+			const { signal, cleanup } = anySignal([epochSignal, wakeSignal]);
+			try {
+				if (deadline === null) {
+					await waitForAbort(signal); // nothing pending → park until woken or the epoch ends
+				} else {
+					await this.clock.sleep(deadline - now, signal).catch(() => {}); // wake/epoch aborts the sleep
+				}
+			} finally {
+				cleanup();
+			}
+		}
 	}
 
 	// ---------------------------------------------------------------------------
 	// Internal — Heartbeat
 	// ---------------------------------------------------------------------------
 
+	/** Start the per-epoch heartbeat monitor (canSend-gated, runs on the injected clock until the epoch aborts). */
 	private startHeartbeat(): void {
-		this.stopHeartbeat();
-
-		this.heartbeatTimer = setInterval(() => {
-			if (this.transport.state === "open") {
-				this.send({ type: "heartbeat", data: {} as Record<string, never> });
-
-				this.pongTimeout = setTimeout(() => {
-					this.transport.close(CLOSE_CODES.HEARTBEAT_TIMEOUT, "Heartbeat timeout");
-				}, this.options.heartbeatTimeout);
-			}
-		}, this.options.heartbeatInterval);
+		if (!this.epoch) return;
+		this.heartbeat = new HeartbeatMonitor({
+			clock: this.clock,
+			intervalMs: this.options.heartbeatIntervalMs,
+			pongTimeoutMs: this.options.pongTimeoutMs,
+			canSend: this.transport.capabilities.canSend,
+			send: () => this.send({ type: "heartbeat" }),
+			onTimeout: () => this.handleHeartbeatTimeout(),
+		});
+		// The heartbeat loop error surfaces to the SDK logger once wired (parallel to _redact); a clean
+		// abort is caught inside run(). Guarded so a transport-agnostic send/close throw isn't unhandled.
+		void this.heartbeat.run(this.epoch.signal).catch(() => {});
 	}
 
-	private stopHeartbeat(): void {
-		if (this.heartbeatTimer) {
-			clearInterval(this.heartbeatTimer);
-			this.heartbeatTimer = null;
-		}
-		if (this.pongTimeout) {
-			clearTimeout(this.pongTimeout);
-			this.pongTimeout = null;
-		}
+	/**
+	 * A local heartbeat timeout — the connection is dead. Client-initiated `close()` does NOT echo back
+	 * through `handleTransportClose` (the transport nulls its close handler before closing), so we drive
+	 * teardown + the reconnect path directly here (FR-019: local 4000 → reconnect).
+	 */
+	private handleHeartbeatTimeout(): void {
+		this.onConnectionLost();
+		this.teardownEpoch();
+		this.transport.close(CLOSE_CODES.HEARTBEAT_TIMEOUT, "Heartbeat timeout");
+		this.emit("close", CLOSE_CODES.HEARTBEAT_TIMEOUT, "Heartbeat timeout");
+		void this.handleReconnect();
 	}
 
-	private clearTimers(): void {
-		this.stopHeartbeat();
-		if (this.reconnectTimer) {
-			clearTimeout(this.reconnectTimer);
-			this.reconnectTimer = null;
-		}
+	/** Tear down the current connection epoch — aborts the heartbeat loop (the TaskGroup analog). */
+	private teardownEpoch(): void {
+		this.connectTimer?.abort(); // cancel the handshake deadline whenever the epoch ends
+		this.connectTimer = null;
+		this.epoch?.abort();
+		this.epoch = null;
+		this.heartbeat = null;
 	}
 
 	// ---------------------------------------------------------------------------
@@ -496,7 +1128,7 @@ export class SukkoClient extends TypedEventEmitter<SukkoClientEvents> {
 			if (document.visibilityState === "visible") {
 				const timeSinceActivity = Date.now() - this.lastActivityTimestamp;
 
-				if (timeSinceActivity > this.options.staleConnectionThreshold) {
+				if (timeSinceActivity > this.options.staleConnectionThresholdMs) {
 					this.forceReconnect();
 				} else if (this._state !== "connected") {
 					this.forceReconnect();
@@ -548,4 +1180,52 @@ export class SukkoClient extends TypedEventEmitter<SukkoClientEvents> {
 		// Fallback for environments without crypto.randomUUID
 		return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 	}
+}
+
+/**
+ * Combine several `AbortSignal`s into one that aborts as soon as any source does. Returns a `cleanup`
+ * that MUST be called (in a `finally`) to detach the source listeners — the recovery timer builds one
+ * of these per wait, so leaving listeners attached would accumulate them on the long-lived epoch
+ * signal (§XI deterministic teardown). Not `AbortSignal.any()` — that isn't in the ES2020 lib types.
+ */
+function anySignal(signals: AbortSignal[]): { signal: AbortSignal; cleanup: () => void } {
+	const controller = new AbortController();
+	const onAbort = (): void => controller.abort();
+	for (const source of signals) {
+		if (source.aborted) {
+			controller.abort();
+			break;
+		}
+		source.addEventListener("abort", onAbort, { once: true });
+	}
+	const cleanup = (): void => {
+		for (const source of signals) source.removeEventListener("abort", onAbort);
+	};
+	return { signal: controller.signal, cleanup };
+}
+
+/** Resolve once `signal` aborts (immediately if already aborted). No timer — used to park indefinitely. */
+function waitForAbort(signal: AbortSignal): Promise<void> {
+	if (signal.aborted) return Promise.resolve();
+	return new Promise<void>((resolve) => {
+		signal.addEventListener("abort", () => resolve(), { once: true });
+	});
+}
+
+/**
+ * Map a REST-publish failure onto the `publishError` event's `PublishError` shape — the sink for a
+ * fire-and-forget `publish()` routed over REST on a receive-only transport. The `message` is already
+ * redacted by `HttpApi` (§IX). The synthesized frame lets one consumer handle publish failures
+ * uniformly across WS and SSE.
+ */
+function publishErrorFromRest(err: unknown): PublishError {
+	const message = err instanceof Error ? err.message : "publish failed";
+	let code: PublishError["code"] = "publish_failed";
+	if (err instanceof PayloadTooLargeError) code = "message_too_large";
+	else if (err instanceof RateLimitedError) code = "rate_limited";
+	else if (err instanceof ValidationError) code = "invalid_request";
+	else if (err instanceof EditionRequiredError) code = "not_available";
+	else if (err instanceof ForbiddenError) code = "forbidden";
+	else if (err instanceof ServiceUnavailableError) code = "service_unavailable";
+	return { type: "publish_error", code, message };
 }
