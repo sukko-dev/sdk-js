@@ -80,7 +80,10 @@ export interface SukkoPluginOptions {
 }
 
 /**
- * Vue plugin that provides a SukkoClient at the app level.
+ * Vue plugin that provides a SukkoClient at the app level. A client created from `options` connects
+ * per its own `autoConnect` (default `true`) — unlike the `SukkoProvider` component, the plugin has no
+ * unmount lifecycle, so it does not force `autoConnect: false`; pass `options.autoConnect: false` to
+ * connect manually. A pre-built `client` is provided as-is (the caller owns its lifecycle).
  *
  * ```ts
  * const app = createApp(App);
@@ -93,8 +96,7 @@ export function createSukkoPlugin(pluginOptions: SukkoPluginOptions): Plugin {
 			if (!pluginOptions.client && !pluginOptions.options) {
 				throw new Error("createSukkoPlugin requires either a 'client' or 'options'");
 			}
-			const client =
-				pluginOptions.client ?? new SukkoClient({ ...pluginOptions.options!, autoConnect: false });
+			const client = pluginOptions.client ?? new SukkoClient(pluginOptions.options!);
 			app.provide(SUKKO_KEY, client);
 		},
 	};

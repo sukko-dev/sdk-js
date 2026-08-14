@@ -1114,36 +1114,36 @@ export class SukkoClient extends TypedEventEmitter<SukkoClientEvents> {
 	// ---------------------------------------------------------------------------
 
 	private setupNetworkListeners(): void {
-		if (typeof window === "undefined") return;
-
-		this.boundHandleOnline = () => {
-			if (this._state === "error" || this._state === "disconnected") {
-				this.forceReconnect();
-			}
-		};
-
-		this.boundHandleVisibilityChange = () => {
-			if (typeof document === "undefined") return;
-
-			if (document.visibilityState === "visible") {
-				const timeSinceActivity = Date.now() - this.lastActivityTimestamp;
-
-				if (timeSinceActivity > this.options.staleConnectionThresholdMs) {
-					this.forceReconnect();
-				} else if (this._state !== "connected") {
+		// `window` and `document` are guarded INDEPENDENTLY: some runtimes (React Native) expose one
+		// without the other, so calling addEventListener on the missing global would throw at construction
+		// (NFR-002 import safety). `online` needs `window`; `visibilitychange` needs `document`.
+		if (typeof window !== "undefined" && typeof window.addEventListener === "function") {
+			this.boundHandleOnline = () => {
+				if (this._state === "error" || this._state === "disconnected") {
 					this.forceReconnect();
 				}
-			}
-		};
+			};
+			window.addEventListener("online", this.boundHandleOnline);
+		}
 
-		window.addEventListener("online", this.boundHandleOnline);
-		document.addEventListener("visibilitychange", this.boundHandleVisibilityChange);
+		if (typeof document !== "undefined" && typeof document.addEventListener === "function") {
+			this.boundHandleVisibilityChange = () => {
+				if (document.visibilityState === "visible") {
+					const timeSinceActivity = Date.now() - this.lastActivityTimestamp;
+
+					if (timeSinceActivity > this.options.staleConnectionThresholdMs) {
+						this.forceReconnect();
+					} else if (this._state !== "connected") {
+						this.forceReconnect();
+					}
+				}
+			};
+			document.addEventListener("visibilitychange", this.boundHandleVisibilityChange);
+		}
 	}
 
 	private removeNetworkListeners(): void {
-		if (typeof window === "undefined") return;
-
-		if (this.boundHandleOnline) {
+		if (this.boundHandleOnline && typeof window !== "undefined") {
 			window.removeEventListener("online", this.boundHandleOnline);
 		}
 		if (this.boundHandleVisibilityChange && typeof document !== "undefined") {
