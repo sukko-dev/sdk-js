@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { FakeClock } from "../src/_clock";
 import { clearSecrets } from "../src/_redact";
 import { ConfigurationError, EditionRequiredError, ProtocolError } from "../src/errors";
@@ -154,6 +154,119 @@ describe("PushClient — unsubscribe", () => {
 			await expect(push.unsubscribe(id)).rejects.toBeInstanceOf(ConfigurationError);
 		}
 		expect(called).toBe(false);
+	});
+});
+
+describe("PushClient — enableWebPush", () => {
+	// `globalThis.navigator` is a read-only getter in Node — override the browser globals via vi.
+	afterEach(() => vi.unstubAllGlobals());
+
+	function stubBrowser(subscribe: (opts: unknown) => Promise<unknown>): void {
+		vi.stubGlobal("PushManager", class {});
+		vi.stubGlobal("navigator", {
+			serviceWorker: { ready: Promise.resolve({ pushManager: { subscribe } }) },
+		});
+	}
+
+	it("throws ConfigurationError outside a Web Push-capable browser (Node)", async () => {
+		const push = makePush(
+			async () => new Response(JSON.stringify({ device_id: 1 }), { status: 201 }),
+		);
+		await expect(push.enableWebPush({ channels: ["a"] })).rejects.toBeInstanceOf(
+			ConfigurationError,
+		);
+	});
+
+	it("runs the W3C flow: VAPID → PushManager.subscribe → push.subscribe('web')", async () => {
+		let subscribeBody: unknown;
+		const fetchImpl: FetchLike = async (u, init) => {
+			// "q_-A" is base64url containing BOTH `-` and `_` — exercises the base64url→base64 replacement
+			// branches and decodes to bytes [171, 255, 128].
+			if (u.endsWith("/vapid-key")) {
+				return new Response(JSON.stringify({ public_key: "q_-A" }), { status: 200 });
+			}
+			subscribeBody = init?.body;
+			return new Response(JSON.stringify({ device_id: 777 }), { status: 201 });
+		};
+		let subscribeArgs: { userVisibleOnly?: boolean; applicationServerKey?: unknown } = {};
+		stubBrowser(async (opts) => {
+			subscribeArgs = opts as typeof subscribeArgs;
+			return {
+				endpoint: "https://push.example.com/ep",
+				getKey: (name: string) =>
+					name === "p256dh"
+						? new Uint8Array([1, 2, 3]).buffer
+						: name === "auth"
+							? new Uint8Array([4, 5]).buffer
+							: null,
+			};
+		});
+
+		const push = makePush(fetchImpl);
+		const id = await push.enableWebPush({ channels: ["acme.x"] });
+
+		expect(id).toBe("777");
+		expect(subscribeArgs.userVisibleOnly).toBe(true);
+		// VAPID base64url → applicationServerKey bytes (witnesses the actual decode, not just the type).
+		expect(subscribeArgs.applicationServerKey).toBeInstanceOf(Uint8Array);
+		expect(Array.from(subscribeArgs.applicationServerKey as Uint8Array)).toEqual([171, 255, 128]);
+		const body = JSON.parse(subscribeBody as string);
+		expect(body.platform).toBe("web");
+		expect(body.channels).toEqual(["acme.x"]); // EnableWebPushOptions.channels → wire
+		expect(body.endpoint).toBe("https://push.example.com/ep");
+		expect(body.p256dh_key).toBe("AQID"); // base64url of [1,2,3]
+		expect(body.auth_secret).toBe("BAU"); // base64url of [4,5]
+	});
+
+	it("uses an explicitly-supplied serviceWorker registration (never touching navigator.ready)", async () => {
+		let subscribeBody: unknown;
+		const push = makePush(async (u, init) => {
+			if (u.endsWith("/vapid-key")) {
+				return new Response(JSON.stringify({ public_key: "BNcR" }), { status: 200 });
+			}
+			subscribeBody = init?.body;
+			return new Response(JSON.stringify({ device_id: 888 }), { status: 201 });
+		});
+		// Capability gate must still pass (`serviceWorker` present, PushManager defined) but the explicit
+		// registration means `navigator.serviceWorker.ready` MUST NOT be read.
+		vi.stubGlobal("PushManager", class {});
+		vi.stubGlobal("navigator", {
+			serviceWorker: {
+				get ready(): never {
+					throw new Error("ready must not be read when a serviceWorker is supplied");
+				},
+			},
+		});
+		const registration = {
+			pushManager: {
+				subscribe: async () => ({
+					endpoint: "https://push.example.com/explicit",
+					getKey: (name: string) =>
+						name === "p256dh" ? new Uint8Array([9]).buffer : new Uint8Array([8]).buffer,
+				}),
+			},
+		} as unknown as ServiceWorkerRegistration;
+
+		const id = await push.enableWebPush({ channels: ["acme.x"], serviceWorker: registration });
+
+		expect(id).toBe("888");
+		expect(JSON.parse(subscribeBody as string).endpoint).toBe("https://push.example.com/explicit");
+	});
+
+	it("throws ProtocolError when the subscription is missing its keys", async () => {
+		stubBrowser(async () => ({ endpoint: "https://ep", getKey: () => null }));
+		const push = makePush(
+			async () => new Response(JSON.stringify({ public_key: "BNcR" }), { status: 200 }),
+		);
+		await expect(push.enableWebPush({ channels: ["a"] })).rejects.toBeInstanceOf(ProtocolError);
+	});
+
+	it("throws ProtocolError when the VAPID key is not valid base64url", async () => {
+		stubBrowser(async () => ({ endpoint: "https://ep", getKey: () => new Uint8Array([1]).buffer }));
+		const push = makePush(
+			async () => new Response(JSON.stringify({ public_key: "@@@not-base64@@@" }), { status: 200 }),
+		);
+		await expect(push.enableWebPush({ channels: ["a"] })).rejects.toBeInstanceOf(ProtocolError);
 	});
 });
 

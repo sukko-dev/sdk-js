@@ -98,6 +98,81 @@ export class PushClient {
 		}
 		return result.public_key;
 	}
+
+	/**
+	 * Browser convenience: run the full W3C Push API subscribe flow and register the resulting Web Push
+	 * subscription — fetch the tenant VAPID key, `PushManager.subscribe({userVisibleOnly, applicationServerKey})`
+	 * against a service-worker registration, then `subscribe('web', …)` with the endpoint + p256dh/auth
+	 * keys. Resolves to the `deviceId`. Browser-only: the `serviceWorker`/`PushManager` capability is
+	 * checked at CALL time (never at module scope), so importing the SDK under Node stays safe (§XI).
+	 *
+	 * §XII prior art: this is the canonical W3C Push API flow documented by MDN
+	 * (https://developer.mozilla.org/en-US/docs/Web/API/PushManager/subscribe) — `userVisibleOnly: true`
+	 * (Chrome/Edge reject the promise without it), `applicationServerKey` as the VAPID public key decoded
+	 * from base64url to bytes (`urlBase64ToUint8Array`, verbatim the MDN helper), and `getKey('p256dh'|'auth')`
+	 * to extract the subscription keys.
+	 */
+	async enableWebPush(options: EnableWebPushOptions): Promise<string> {
+		if (
+			typeof navigator === "undefined" ||
+			!("serviceWorker" in navigator) ||
+			typeof PushManager === "undefined"
+		) {
+			throw new ConfigurationError(
+				"enableWebPush requires a browser with serviceWorker + PushManager support",
+			);
+		}
+		const registration = options.serviceWorker ?? (await navigator.serviceWorker.ready);
+		const vapidKey = await this.getVapidKey();
+		const subscription = await registration.pushManager.subscribe({
+			userVisibleOnly: true,
+			applicationServerKey: urlBase64ToUint8Array(vapidKey),
+		});
+		const p256dh = subscription.getKey("p256dh");
+		const auth = subscription.getKey("auth");
+		if (p256dh === null || auth === null) {
+			throw new ProtocolError("web push subscription is missing its p256dh/auth keys");
+		}
+		return this.subscribe({
+			platform: "web",
+			channels: options.channels,
+			endpoint: subscription.endpoint,
+			p256dhKey: arrayBufferToBase64Url(p256dh),
+			authSecret: arrayBufferToBase64Url(auth),
+		});
+	}
+}
+
+export interface EnableWebPushOptions {
+	/** Channels the subscription should receive push for (tenant-prefixed). */
+	channels: string[];
+	/** The service-worker registration to subscribe against. Default: `navigator.serviceWorker.ready`. */
+	serviceWorker?: ServiceWorkerRegistration;
+}
+
+/** VAPID public key (base64url) → the `Uint8Array` `applicationServerKey` PushManager expects. */
+function urlBase64ToUint8Array(base64Url: string): Uint8Array<ArrayBuffer> {
+	const padding = "=".repeat((4 - (base64Url.length % 4)) % 4);
+	const base64 = (base64Url + padding).replace(/-/g, "+").replace(/_/g, "/");
+	// §XI: the VAPID key is untrusted server input — a non-base64 value makes `atob` throw a raw
+	// DOMException; surface it as a typed ProtocolError instead of leaking a non-SDK error.
+	let raw: string;
+	try {
+		raw = atob(base64);
+	} catch {
+		throw new ProtocolError("vapid-key response was not valid base64url");
+	}
+	const out = new Uint8Array(raw.length);
+	for (let i = 0; i < raw.length; i++) out[i] = raw.charCodeAt(i);
+	return out;
+}
+
+/** A subscription key (`ArrayBuffer` from `getKey`) → the base64url the gateway expects. */
+function arrayBufferToBase64Url(buffer: ArrayBuffer): string {
+	const bytes = new Uint8Array(buffer);
+	let binary = "";
+	for (const b of bytes) binary += String.fromCharCode(b);
+	return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 
 /** Validate `deviceId` is a canonical positive int64 (§II — reject locally, not via a gateway 400). The
