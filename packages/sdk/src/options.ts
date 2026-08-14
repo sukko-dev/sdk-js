@@ -85,6 +85,9 @@ export interface SukkoClientOptions {
 	pongTimeoutMs?: number;
 	/** Duration in ms after which a connection with no activity is considered stale. Default: 30000. */
 	staleConnectionThresholdMs?: number;
+	/** Handshake deadline in ms: if the transport does not reach `connected` within this window, the
+	 * client aborts the attempt and reconnects with backoff. Default: 10000. */
+	connectTimeoutMs?: number;
 	/** Connect automatically on construction. Default: true. */
 	autoConnect?: boolean;
 	/** Async callback to fetch a fresh token. Called during auth refresh. */

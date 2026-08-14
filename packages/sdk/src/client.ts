@@ -137,6 +137,9 @@ export class SukkoClient extends TypedEventEmitter<SukkoClientEvents> {
 	// (the TaskGroup analog).
 	private epoch: AbortController | null = null;
 	private heartbeat: HeartbeatMonitor | null = null;
+	// Handshake deadline: armed on open(), cancelled on connected (handleTransportOpen) or any epoch end
+	// (teardownEpoch). If it fires first, the handshake stalled → abort the attempt and reconnect.
+	private connectTimer: AbortController | null = null;
 
 	// Client-lifetime signal for the reconnect-backoff sleep; aborted by disconnect() to cancel a
 	// pending reconnect, re-created on a fresh connect() after a disconnect.
@@ -160,6 +163,7 @@ export class SukkoClient extends TypedEventEmitter<SukkoClientEvents> {
 			pongTimeoutMs: options.pongTimeoutMs ?? SUKKO_DEFAULTS.pongTimeoutMs,
 			staleConnectionThresholdMs:
 				options.staleConnectionThresholdMs ?? SUKKO_DEFAULTS.staleConnectionThresholdMs,
+			connectTimeoutMs: options.connectTimeoutMs ?? SUKKO_DEFAULTS.connectTimeoutMs,
 			autoConnect: options.autoConnect ?? true,
 			bufferSize: options.bufferSize ?? SUKKO_DEFAULTS.bufferSize,
 			overflowPolicy: options.overflowPolicy ?? SUKKO_DEFAULTS.overflowPolicy,
@@ -328,6 +332,44 @@ export class SukkoClient extends TypedEventEmitter<SukkoClientEvents> {
 			this.transport.setChannels(Array.from(this._subscriptions.desiredChannels));
 		}
 		this.transport.open();
+		this.armConnectTimeout();
+	}
+
+	/**
+	 * Arm the per-attempt handshake deadline. If the transport does not reach `connected` within
+	 * `connectTimeoutMs`, the attempt is aborted and reconnected (backoff). This is the transport-agnostic
+	 * §II backstop: the WebSocket and SSE transports carry their own connect timeouts, but a transport's
+	 * own failure routes through `teardownEpoch` and cancels this timer first — so the client deadline only
+	 * fires for a transport that stalls without self-timing-out (a custom transport, or one configured
+	 * with a longer deadline).
+	 */
+	private armConnectTimeout(): void {
+		this.connectTimer?.abort();
+		const timer = new AbortController();
+		this.connectTimer = timer;
+		void this.runConnectTimeout(timer.signal);
+	}
+
+	private async runConnectTimeout(signal: AbortSignal): Promise<void> {
+		try {
+			await this.clock.sleep(this.options.connectTimeoutMs, signal);
+		} catch {
+			return; // cancelled — the handshake completed (handleTransportOpen) or the epoch was torn down
+		}
+		// The sleep can settle in the same turn the transport opens; the abort in handleTransportOpen cannot
+		// un-settle an already-resolved promise, so re-validate before acting (mirrors the reactive-auth
+		// post-await recheck, §XVIII).
+		if (this.transport.state === "open") return;
+		this.handleConnectTimeout();
+	}
+
+	/** The handshake stalled past `connectTimeoutMs`: tear down the stuck attempt and reconnect with
+	 * backoff, so a stalled connect counts as a failed attempt and eventually exhausts to terminal. */
+	private handleConnectTimeout(): void {
+		this.onConnectionLost();
+		this.teardownEpoch();
+		this.transport.close(); // client-initiated close does not echo — no reconnect via handleTransportClose
+		void this.handleReconnect();
 	}
 
 	/** Disconnect intentionally (no automatic reconnection). */
@@ -575,6 +617,8 @@ export class SukkoClient extends TypedEventEmitter<SukkoClientEvents> {
 	}
 
 	private handleTransportOpen(): void {
+		this.connectTimer?.abort(); // handshake completed — cancel the deadline
+		this.connectTimer = null;
 		this.setState("connected");
 		this.reconnectAttempt = 0;
 		this.lastActivityTimestamp = Date.now();
@@ -1058,6 +1102,8 @@ export class SukkoClient extends TypedEventEmitter<SukkoClientEvents> {
 
 	/** Tear down the current connection epoch — aborts the heartbeat loop (the TaskGroup analog). */
 	private teardownEpoch(): void {
+		this.connectTimer?.abort(); // cancel the handshake deadline whenever the epoch ends
+		this.connectTimer = null;
 		this.epoch?.abort();
 		this.epoch = null;
 		this.heartbeat = null;
