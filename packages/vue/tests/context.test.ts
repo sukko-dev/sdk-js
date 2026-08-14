@@ -3,7 +3,7 @@ import type { Transport, TransportCapabilities, TransportEvents, TransportState 
 import { mount } from "@vue/test-utils";
 import { describe, expect, it } from "vitest";
 import { defineComponent, h } from "vue";
-import { SukkoProvider, useSukkoClient } from "../src/context";
+import { SukkoProvider, createSukkoPlugin, useSukkoClient } from "../src/context";
 
 class MockTransport extends TypedEventEmitter<TransportEvents> implements Transport {
 	private _state: TransportState = "closed";
@@ -104,5 +104,27 @@ describe("SukkoProvider", () => {
 		// The provider created its own client — it should disconnect on unmount
 		wrapper.unmount();
 		// No assertion on disconnect (private state), just verify no error
+	});
+});
+
+describe("createSukkoPlugin", () => {
+	it("connects the client it creates from options (has no unmount lifecycle to defer to)", () => {
+		const plugin = createSukkoPlugin({ options: { transport: new MockTransport() } });
+		const wrapper = mount(TestConsumer, { global: { plugins: [plugin] } });
+		// autoConnect defaults true and the plugin no longer forces it off → the client connected.
+		expect(wrapper.find('[data-testid="state"]').text()).toBe("connecting");
+	});
+
+	it("provides a pre-built client as-is without forcing a connect", () => {
+		const client = new SukkoClient({ transport: new MockTransport(), autoConnect: false });
+		const plugin = createSukkoPlugin({ client });
+		const wrapper = mount(TestConsumer, { global: { plugins: [plugin] } });
+		expect(wrapper.find('[data-testid="state"]').text()).toBe("disconnected");
+	});
+
+	it("throws when given neither client nor options", () => {
+		expect(() => createSukkoPlugin({}).install?.({ provide() {} } as never)).toThrow(
+			"requires either a 'client' or 'options'",
+		);
 	});
 });

@@ -5,7 +5,7 @@
 // is fixed for the client's lifetime — no automatic WS↔SSE fallback, no swap API). The core must import
 // and instantiate under Node with no DOM globals; browser-only capabilities are gated at call time.
 
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { FakeClock } from "../src/_clock";
 import { TypedEventEmitter } from "../src/emitter";
 import type {
@@ -81,7 +81,28 @@ describe("import safety (NFR-002)", () => {
 			ConfigurationError,
 		);
 	});
+
+	it("constructs safely when `window` exists but `document` does not (React Native)", async () => {
+		const { SukkoClient } = await import("../src/index");
+		const listeners: string[] = [];
+		// The RN shape: a `window` global (here with addEventListener) but no `document`. The network
+		// listeners must guard each global independently or `document.addEventListener` throws at
+		// construction (NFR-002).
+		vi.stubGlobal("window", {
+			addEventListener: (event: string) => listeners.push(event),
+			removeEventListener: () => {},
+		});
+		expect(typeof document).toBe("undefined"); // document stays absent — the discriminating condition
+
+		expect(
+			() => new SukkoClient({ transport: new CountingTransport(), autoConnect: false }),
+		).not.toThrow();
+		expect(listeners).toContain("online"); // the window-only listener registered…
+		expect(listeners).not.toContain("visibilitychange"); // …and the document-only one was skipped
+	});
 });
+
+afterEach(() => vi.unstubAllGlobals());
 
 describe("transport is fixed for the client's lifetime (FR-023)", () => {
 	it("exposes no API to swap the transport", async () => {
