@@ -1,0 +1,45 @@
+{
+	"name": "@sukko/websocket-node",
+	"version": "0.1.0",
+	"description": "Node WebSocket transport (ws) with real back-pressure for the Sukko SDK",
+	"type": "module",
+	"main": "./dist/index.cjs",
+	"module": "./dist/index.js",
+	"types": "./dist/index.d.ts",
+	"exports": {
+		".": {
+			"import": {
+				"types": "./dist/index.d.ts",
+				"default": "./dist/index.js"
+			},
+			"require": {
+				"types": "./dist/index.d.cts",
+				"default": "./dist/index.cjs"
+			}
+		}
+	},
+	"files": ["dist"],
+	"sideEffects": false,
+	"license": "MIT",
+	"publishConfig": {
+		"access": "public"
+	},
+	"scripts": {
+		"build": "tsup",
+		"test": "vitest run",
+		"test:watch": "vitest"
+	},
+	"dependencies": {
+		"ws": "^8"
+	},
+	"peerDependencies": {
+		"@sukko/sdk": "workspace:*"
+	},
+	"devDependencies": {
+		"@sukko/sdk": "workspace:*",
+		"@types/ws": "^8",
+		"tsup": "^8",
+		"typescript": "^5.5",
+		"vitest": "^3"
+	}
+}

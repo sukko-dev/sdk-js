@@ -3,7 +3,7 @@
 	"license": "MIT",
 	"workspaces": ["packages/*", "examples/*"],
 	"scripts": {
-		"build": "bun run --filter '@sukko/sdk' build && bun run --filter '@sukko/websocket' --filter '@sukko/react' --filter '@sukko/vue' --filter '@sukko/svelte' --filter '@sukko/react-native' build",
+		"build": "bun run --filter '@sukko/sdk' build && bun run --filter '@sukko/websocket' --filter '@sukko/react' --filter '@sukko/vue' --filter '@sukko/svelte' --filter '@sukko/react-native' --filter '@sukko/websocket-node' build",
 		"test": "bun run --filter './packages/*' test",
 		"lint": "biome check .",
 		"typecheck": "bun run --filter '@sukko/sdk' typecheck",
