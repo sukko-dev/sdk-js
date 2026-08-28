@@ -6,8 +6,12 @@
 // cursors (`pos`, `last_pos`, `from_pos`) are kept — the SDK stores and echoes them, never parses
 // them. The `seq` family (`seq`, `from_seq`, `to_seq`) is intentionally NOT modelled: the server
 // `gap` advisory is the sole gap authority, so `seq` is unconsumed and excluded (asserted absent by
-// the public-surface test). `force_disconnect` is NOT a message type — it is WS close code 4000
-// (see `constants.ts`).
+// the public-surface test). `mid` (stable message identity, klurvio/sukko#241) IS modelled even
+// though the SDK never consumes it itself — it exists solely for caller-side dedup/idempotency,
+// mirroring Ably's first-class `Message.id` (§XII prior art:
+// https://ably.com/docs/api/realtime-sdk/messages, https://ably.com/blog/introducing-idempotent-publishing)
+// and Centrifugo's idempotent-identifier guidance (https://centrifugal.dev/docs/faq).
+// `force_disconnect` is NOT a message type — it is WS close code 4000 (see `constants.ts`).
 
 /** An opaque JSON payload owned by the publishing service. */
 export type JsonObject = Record<string, unknown>;
@@ -24,6 +28,15 @@ export interface Message {
 	data: JsonObject;
 	history?: boolean;
 	pos?: string;
+	/**
+	 * Stable message identity — IDENTICAL on every copy of the same message (live broadcast, gap-replay
+	 * `replay_message`, history), unlike the per-connection `seq` (unmodelled) and the `pos` replay
+	 * cursor. Use it to deduplicate reconnect-replay overlap (same `mid` = same message) and for
+	 * idempotent processing. Opaque, at most 64 characters — never parse it, and never send it as a
+	 * replay cursor (`last_pos`/`from_pos` accept `pos` values only). Omitted by servers predating the
+	 * field.
+	 */
+	readonly mid?: string;
 }
 
 export interface SubscriptionAck {
@@ -43,6 +56,13 @@ export interface PublishAck {
 	type: "publish_ack";
 	channel: string;
 	status: "accepted";
+	/**
+	 * Stable message identity the gateway assigned to the published message — the same `mid`
+	 * subscribers receive on the delivered envelope (see `Message.mid`). Omitted when the publish fans
+	 * out to multiple topics (each produced message gets its own `mid`) and by servers predating the
+	 * field.
+	 */
+	readonly mid?: string;
 }
 
 export type PublishErrorCode =
@@ -172,6 +192,12 @@ export interface ReplayMessage {
 	ts: number; // Unix ms
 	data: JsonObject;
 	pos?: string;
+	/**
+	 * Stable message identity — the same value this message carried (or would have carried) on its
+	 * live and history deliveries; use it to drop replayed duplicates already received (see
+	 * `Message.mid`). Omitted by servers predating the field.
+	 */
+	readonly mid?: string;
 }
 
 export interface ReplayComplete {

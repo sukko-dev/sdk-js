@@ -168,3 +168,69 @@ describe("back-pressure (SC-001, by mechanism)", () => {
 		expect(transport.pauseCalls).toBe(0); // canPauseReceive: false → overflow policy handles it
 	});
 });
+
+describe("stable message identity (mid) — sukko#241", () => {
+	it("exposes mid on live, replay, and history deliveries alike", async () => {
+		const { client, transport } = makeClient();
+		const it = client.messages();
+
+		const live = it.next();
+		transport.deliver({
+			type: "message",
+			ts: 1,
+			channel: "acme.trade",
+			data: {},
+			pos: "2-1",
+			mid: "9c5b1f0a-2-1",
+		});
+		expect((await live).value).toMatchObject({ type: "message", mid: "9c5b1f0a-2-1" });
+
+		const replay = it.next();
+		transport.deliverRaw(
+			JSON.stringify({
+				type: "replay_message",
+				channel: "acme.trade",
+				ts: 2,
+				data: {},
+				pos: "2-2",
+				mid: "9c5b1f0a-2-2",
+			}),
+		);
+		expect((await replay).value).toMatchObject({ type: "replay_message", mid: "9c5b1f0a-2-2" });
+
+		const history = it.next();
+		transport.deliver({
+			type: "message",
+			ts: 3,
+			channel: "acme.trade",
+			data: {},
+			history: true,
+			pos: "1-9",
+			mid: "4f8a2e6b-1-9",
+		});
+		expect((await history).value).toMatchObject({
+			type: "message",
+			history: true,
+			mid: "4f8a2e6b-1-9",
+		});
+	});
+
+	it("types mid as string | undefined on the delivered Message (identity, not cursor)", async () => {
+		const { client, transport } = makeClient();
+		const it = client.messages();
+		const pending = it.next();
+		transport.deliver({ ...liveMessage(1), mid: "abc" });
+		const value = (await pending).value as Message;
+		const mid: string | undefined = value.mid; // compile-time: the field is part of the model
+		expect(mid).toBe("abc");
+	});
+
+	it("leaves mid undefined when the server omits it (servers predating the field)", async () => {
+		const { client, transport } = makeClient();
+		const it = client.messages();
+		const pending = it.next();
+		transport.deliver(liveMessage(1));
+		const value = (await pending).value as Message;
+		expect(value.mid).toBeUndefined();
+	});
+});
