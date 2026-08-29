@@ -1,6 +1,6 @@
 {
 	"name": "@sukko/vue",
-	"version": "0.1.0",
+	"version": "1.0.0",
 	"description": "Vue 3 composables and provider for Sukko real-time WebSocket SDK",
 	"type": "module",
 	"main": "./dist/index.cjs",
