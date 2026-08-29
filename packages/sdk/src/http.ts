@@ -42,8 +42,9 @@ export interface RequestOptions {
 	 * `device_id` int64 must ride the wire as an UNQUOTED number literal. Mutually exclusive with
 	 * `json`; also sets `Content-Type: application/json`. */
 	body?: string;
-	/** Marks an endpoint whose only 4xx cause is the edition gate (the push endpoints), so a 403
-	 * reliably becomes `EditionRequiredError` even when the gateway omits the `code`. */
+	/** Marks an endpoint whose only 403 cause is the edition gate (the push endpoints — Web Push =
+	 * Pro, mobile FCM/APNs = Enterprise), so a 403 reliably becomes `EditionRequiredError` even when
+	 * the gateway omits the `code`. */
 	editionGated?: boolean;
 }
 

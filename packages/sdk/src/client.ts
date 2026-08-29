@@ -47,6 +47,17 @@ import { type RecoveryAction, RecoveryEngine } from "./recovery";
 import { SubscriptionState } from "./subscriptions";
 import type { Transport } from "./transport";
 
+/** The resolved result of an awaitable REST publish (`restPublish`) — the gateway's publish ack. */
+export interface RestPublishResult {
+	/**
+	 * Stable message identity the gateway assigned to the published message — the same `mid`
+	 * subscribers receive on the delivered envelope (see `Message.mid`). Absent when the publish fans
+	 * out to multiple topics (each produced message gets its own `mid`) and on gateways predating the
+	 * field.
+	 */
+	readonly mid?: string;
+}
+
 // The credential options (`token`/`getToken`) are owned by the AuthManager; `clock`/`transport`/`fetch`/
 // `baseUrl` are consumed at construction. What remains are the resolved timing/reconnect/queue knobs.
 type ResolvedOptions = Required<
@@ -468,26 +479,33 @@ export class SukkoClient extends TypedEventEmitter<SukkoClientEvents> {
 	}
 
 	/**
-	 * Publish over REST — awaitable, and works WITHOUT a live WebSocket connection (Pro-gated; a
-	 * Community license rejects with `EditionRequiredError`). Distinct from the fire-and-forget `publish`
-	 * over WS: this resolves on the gateway's ack and rejects typed on failure. Requires a resolvable
-	 * gateway HTTP origin (the `baseUrl` option or a transport exposing a `url`).
+	 * Publish over REST — awaitable, and works WITHOUT a live WebSocket connection. Available on every
+	 * edition (the platform edition remap ungated REST publish; only gateways predating it still reject
+	 * Community with `EditionRequiredError`). Distinct from the fire-and-forget `publish` over WS: this
+	 * resolves on the gateway's ack — carrying the assigned stable message identity (`mid`, when the
+	 * gateway returns one) — and rejects typed on failure. Requires a resolvable gateway HTTP origin
+	 * (the `baseUrl` option or a transport exposing a `url`).
 	 */
-	async restPublish(channel: string, data: JsonObject): Promise<void> {
+	async restPublish(channel: string, data: JsonObject): Promise<RestPublishResult> {
 		if (this.http === null) {
 			throw new ConfigurationError(
 				"restPublish requires the `baseUrl` option (or a transport exposing a `url`)",
 			);
 		}
-		await this.http.request("POST", "/api/v1/publish", { json: { channel, data } });
+		const ack = await this.http.request<{ mid?: unknown }>("POST", "/api/v1/publish", {
+			json: { channel, data },
+		});
+		// §XI: untrusted server input — surface `mid` only when it is the string the contract declares.
+		return typeof ack.mid === "string" ? { mid: ack.mid } : {};
 	}
 
 	// ---------------------------------------------------------------------------
 	// Public API — Push
 	// ---------------------------------------------------------------------------
 
-	/** The Enterprise-gated push subscription-management namespace (`subscribe`/`unsubscribe`/
-	 * `getVapidKey`). Throws `ConfigurationError` if no gateway HTTP origin is resolvable. */
+	/** The edition-gated push subscription-management namespace (`subscribe`/`unsubscribe`/
+	 * `getVapidKey`) — Web Push requires Pro, mobile FCM/APNs requires Enterprise. Throws
+	 * `ConfigurationError` if no gateway HTTP origin is resolvable. */
 	get push(): PushClient {
 		if (this.pushClient === null) {
 			throw new ConfigurationError(
@@ -504,7 +522,7 @@ export class SukkoClient extends TypedEventEmitter<SukkoClientEvents> {
 	/**
 	 * Request up to `limit` historical messages for a subscribed `channel` (default `historyLimit`).
 	 * They arrive on `messages()` as `Message`s with `history: true`, terminated by a `history_complete`
-	 * (Pro + `WS_HISTORY_ENABLED` gated — otherwise a `historyError` event fires). Unlike the fire-and-
+	 * (`WS_HISTORY_ENABLED` gated — otherwise a `historyError` event fires). Unlike the fire-and-
 	 * forget `publish`/`subscribe`, this validates and THROWS: `NotConnectedError` when disconnected,
 	 * `TransportError` on a transport with no client→server channel (history is WS-only), and
 	 * `ConfigurationError` when `limit` exceeds `historyLimit`. Validate first, then arm the detection
@@ -1224,6 +1242,8 @@ function publishErrorFromRest(err: unknown): PublishError {
 	if (err instanceof PayloadTooLargeError) code = "message_too_large";
 	else if (err instanceof RateLimitedError) code = "rate_limited";
 	else if (err instanceof ValidationError) code = "invalid_request";
+	// REST publish is ungated since the platform edition remap — only gateways predating it still
+	// answer with `EDITION_LIMIT` (which is code-keyed to EditionRequiredError, never a blanket 403).
 	else if (err instanceof EditionRequiredError) code = "not_available";
 	else if (err instanceof ForbiddenError) code = "forbidden";
 	else if (err instanceof ServiceUnavailableError) code = "service_unavailable";

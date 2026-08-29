@@ -58,7 +58,7 @@ export type SukkoClientEvents = {
 	reconnecting: (attempt: number) => void;
 	/** A recovery (reconnect-replay / live replay) was truncated — advisory, not terminal (§III). */
 	recoveryInterrupted: (err: RecoveryInterruptedError) => void;
-	/** A `history()` request was rejected by the server (edition-gated, disabled, or invalid). */
+	/** A `history()` request was rejected by the server (disabled, unavailable, or invalid). */
 	historyError: (msg: HistoryError) => void;
 };
 

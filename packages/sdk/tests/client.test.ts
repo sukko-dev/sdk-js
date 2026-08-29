@@ -350,6 +350,32 @@ describe("SukkoClient", () => {
 			client.disconnect();
 		});
 
+		it("publishAck carries the gateway-assigned mid, undefined when omitted (sukko#241)", async () => {
+			const { client, transport } = createClient();
+			client.connect();
+			await vi.advanceTimersByTimeAsync(0);
+
+			const handler = vi.fn();
+			client.on("publishAck", handler);
+
+			transport.simulateMessage({
+				type: "publish_ack",
+				channel: "tenant.BTC.trade",
+				status: "accepted",
+				mid: "9c5b1f0a-2-1235",
+			});
+			expect(handler).toHaveBeenLastCalledWith(expect.objectContaining({ mid: "9c5b1f0a-2-1235" }));
+
+			// Multi-topic fan-out acks and pre-mid servers omit the field.
+			transport.simulateMessage({
+				type: "publish_ack",
+				channel: "tenant.BTC.trade",
+				status: "accepted",
+			});
+			expect((handler.mock.lastCall?.[0] as { mid?: string }).mid).toBeUndefined();
+			client.disconnect();
+		});
+
 		it("emits error events for invalid_json", async () => {
 			const { client, transport } = createClient();
 			client.connect();
@@ -1663,6 +1689,45 @@ describe("SukkoClient", () => {
 			await expect(tooLarge.client.restPublish("a", {})).rejects.toBeInstanceOf(
 				PayloadTooLargeError,
 			);
+		});
+
+		it("restPublish resolves with the gateway-assigned mid (sukko#241)", async () => {
+			const { client } = createClient({
+				token: "jwt",
+				baseUrl: "https://gw",
+				fetch: async () =>
+					new Response(
+						JSON.stringify({ status: "accepted", channel: "acme.x", mid: "9c5b1f0a-2-1235" }),
+						{ status: 200 },
+					),
+			});
+			await expect(client.restPublish("acme.x", { price: 1 })).resolves.toEqual({
+				mid: "9c5b1f0a-2-1235",
+			});
+		});
+
+		it("restPublish resolves with mid undefined when the response omits it (multi-topic fan-out, older gateways)", async () => {
+			const { client } = createClient({
+				token: "jwt",
+				baseUrl: "https://gw",
+				fetch: async () =>
+					new Response(JSON.stringify({ status: "accepted", channel: "acme.x" }), { status: 200 }),
+			});
+			const result = await client.restPublish("acme.x", {});
+			expect(result.mid).toBeUndefined();
+		});
+
+		it("restPublish drops a non-string mid (untrusted server input, §XI)", async () => {
+			const { client } = createClient({
+				token: "jwt",
+				baseUrl: "https://gw",
+				fetch: async () =>
+					new Response(JSON.stringify({ status: "accepted", channel: "acme.x", mid: 42 }), {
+						status: 200,
+					}),
+			});
+			const result = await client.restPublish("acme.x", {});
+			expect(result.mid).toBeUndefined();
 		});
 
 		it("restPublish carries the rotated JWT after escalate (fresh credential per request)", async () => {

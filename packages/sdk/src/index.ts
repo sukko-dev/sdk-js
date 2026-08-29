@@ -1,5 +1,6 @@
 // Core client
 export { SukkoClient } from "./client";
+export type { RestPublishResult } from "./client";
 
 // Event emitter (for advanced use / custom extensions)
 export { TypedEventEmitter } from "./emitter";

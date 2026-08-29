@@ -1,6 +1,7 @@
 // Push subscription management (T038, FR-013) — register/unregister devices + fetch the VAPID key.
-// Enterprise-gated REST over the gateway (`/api/v1/push/*`); a lower edition yields a typed
-// `EditionRequiredError`, an outage a `ServiceUnavailableError`.
+// Edition-gated REST over the gateway (`/api/v1/push/*`): Web Push requires Pro, mobile FCM/APNs
+// requires Enterprise. A lower edition yields a typed `EditionRequiredError`, an outage a
+// `ServiceUnavailableError`.
 //
 // This SDK does NOT *receive* push — a Node backend is neither a Web Push nor an FCM/APNs target. The
 // use-case is registering a mobile app's device token or a browser's Web Push subscription on the
@@ -39,7 +40,8 @@ const VAPID_PATH = "/api/v1/push/vapid-key";
 const DEVICE_ID_DIGITS = /^\d{1,19}$/;
 const INT64_MAX = 9223372036854775807n;
 
-/** The `client.push` namespace — Enterprise-gated push subscription management over REST. */
+/** The `client.push` namespace — edition-gated push subscription management over REST (Web Push =
+ * Pro, mobile FCM/APNs = Enterprise). */
 export class PushClient {
 	private readonly http: HttpApi;
 

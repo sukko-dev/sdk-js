@@ -112,7 +112,7 @@ describe("PushClient — subscribe", () => {
 		).rejects.toBeInstanceOf(ProtocolError);
 	});
 
-	it("surfaces EditionRequiredError on a 403 (Enterprise gate) even with an empty body", async () => {
+	it("surfaces EditionRequiredError on a 403 (edition gate — Pro for Web Push, Enterprise for mobile) even with an empty body", async () => {
 		const push = makePush(async () => new Response("", { status: 403 }));
 		await expect(
 			push.subscribe({ platform: "android", channels: ["a"], token: "t" }),
