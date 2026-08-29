@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# Local lint gate — mirrors the CI "Lint & format check" + typecheck steps so
+# drift is caught before the commit, not on the PR. Install once:
+#   git config core.hooksPath .githooks
+# (also configured automatically by the package.json "prepare" script on install)
+set -euo pipefail
+
+echo "pre-commit: biome check"
+bun run lint
+
+echo "pre-commit: typecheck (@sukko/sdk)"
+bun run typecheck
