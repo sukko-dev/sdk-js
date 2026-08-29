@@ -5,6 +5,15 @@
 # (also configured automatically by the package.json "prepare" script on install)
 set -euo pipefail
 
+# CI guard: the "prepare" script installs this hook in CI too, where the
+# changesets action makes the release commit. CI already runs these same checks
+# as jobs, and gating the bot's version-bump commit here blocked publishing
+# (changesets rewrites package.json in its own style before ci:version formats
+# it). The hook is for human commits only.
+if [ -n "${CI:-}" ]; then
+  exit 0
+fi
+
 echo "pre-commit: biome check"
 bun run lint
 
