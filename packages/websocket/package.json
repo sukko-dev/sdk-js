@@ -1,6 +1,6 @@
 {
 	"name": "@sukko/websocket",
-	"version": "0.1.0",
+	"version": "1.0.0",
 	"description": "WebSocket transport for Sukko SDK",
 	"type": "module",
 	"main": "./dist/index.cjs",

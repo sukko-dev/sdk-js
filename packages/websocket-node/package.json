@@ -1,6 +1,6 @@
 {
 	"name": "@sukko/websocket-node",
-	"version": "0.1.0",
+	"version": "1.0.0",
 	"description": "Node WebSocket transport (ws) with real back-pressure for the Sukko SDK",
 	"type": "module",
 	"main": "./dist/index.cjs",

@@ -14,8 +14,8 @@
 		"prepare": "git config core.hooksPath .githooks"
 	},
 	"devDependencies": {
-		"@biomejs/biome": "^1.9",
-		"@changesets/cli": "^2.29",
-		"jose": "^6.0"
+		"@biomejs/biome": "^1.9.4",
+		"@changesets/cli": "^2.31.1",
+		"jose": "^6.2.10"
 	}
 }
