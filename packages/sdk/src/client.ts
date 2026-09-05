@@ -124,7 +124,7 @@ export class SukkoClient extends TypedEventEmitter<SukkoClientEvents> {
 	private readonly pushClient: PushClient | null;
 
 	// Delivery — a client-lifetime bounded queue drained by `messages()`; the event-emitter is the
-	// non-back-pressured pre-queue tap (§ plan: forced dual delivery surface).
+	// non-back-pressured pre-queue tap (deliberate dual delivery surface).
 	private readonly deliveryQueue: DeliveryQueue;
 	private queueConsumer = false;
 	private transportPaused = false;

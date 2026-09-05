@@ -279,6 +279,13 @@ bun run token ...    # Generate test JWT tokens
 3. Add a changeset: `bunx changeset`
 4. Submit a pull request
 
+Contributions are reviewed against the
+[engineering principles](docs/engineering-principles.md) — code comments cite
+them by section (`// per §XI`); sections not present there (e.g. §II, §XV)
+refer to the
+[platform principles](https://github.com/sukko-dev/sukko/blob/main/docs/engineering-principles.md).
+Durable design decisions live in [docs/adr/](docs/adr/), cited as `ADR-NNNN`.
+
 ## License
 
 MIT
