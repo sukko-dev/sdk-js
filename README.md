@@ -1,6 +1,6 @@
 # Sukko SDK
 
-TypeScript SDK for the [Sukko](https://github.com/klurvio/sukko) real-time platform.
+TypeScript SDK for the [Sukko](https://github.com/sukko-dev/sukko) real-time platform.
 
 ## Packages
 

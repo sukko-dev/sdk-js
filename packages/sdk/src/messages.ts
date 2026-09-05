@@ -6,7 +6,7 @@
 // cursors (`pos`, `last_pos`, `from_pos`) are kept — the SDK stores and echoes them, never parses
 // them. The `seq` family (`seq`, `from_seq`, `to_seq`) is intentionally NOT modelled: the server
 // `gap` advisory is the sole gap authority, so `seq` is unconsumed and excluded (asserted absent by
-// the public-surface test). `mid` (stable message identity, klurvio/sukko#241) IS modelled even
+// the public-surface test). `mid` (stable message identity, sukko-dev/sukko#241) IS modelled even
 // though the SDK never consumes it itself — it exists solely for caller-side dedup/idempotency,
 // mirroring Ably's first-class `Message.id` (§XII prior art:
 // https://ably.com/docs/api/realtime-sdk/messages, https://ably.com/blog/introducing-idempotent-publishing)
