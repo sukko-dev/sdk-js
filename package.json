@@ -1,0 +1,21 @@
+{
+	"private": true,
+	"license": "MIT",
+	"workspaces": ["packages/*", "examples/*"],
+	"scripts": {
+		"build": "bun run --filter '@sukko/sdk' build && bun run --filter '@sukko/websocket' --filter '@sukko/react' --filter '@sukko/vue' --filter '@sukko/svelte' --filter '@sukko/react-native' --filter '@sukko/websocket-node' build",
+		"test": "bun run --filter './packages/*' test",
+		"lint": "biome check .",
+		"typecheck": "bun run --filter '@sukko/sdk' typecheck",
+		"format": "biome format --write .",
+		"token": "bun run scripts/generate-token.ts",
+		"ci:version": "changeset version && bun update && bun run format",
+		"ci:publish": "bun run build && changeset publish",
+		"prepare": "git config core.hooksPath .githooks"
+	},
+	"devDependencies": {
+		"@biomejs/biome": "^1.9.4",
+		"@changesets/cli": "^2.31.1",
+		"jose": "^6.2.10"
+	}
+}

@@ -1,0 +1,236 @@
+// Delivery-path tests, including the back-pressure mechanism. The `messages()` iterator is
+// the authoritative surface; the `.on("message")` emitter is the pre-queue tap; malformed/unknown
+// frames must not kill the pump; back-pressure is asserted by MECHANISM (pause/resume calls), not by
+// a memory measurement.
+
+import { describe, expect, it } from "vitest";
+import { SukkoClient } from "../src/client";
+import { TypedEventEmitter } from "../src/emitter";
+import type { Message } from "../src/messages";
+import type {
+	Transport,
+	TransportCapabilities,
+	TransportEvents,
+	TransportState,
+} from "../src/transport";
+
+class FakeTransport extends TypedEventEmitter<TransportEvents> implements Transport {
+	private _state: TransportState = "closed";
+	pauseCalls = 0;
+	resumeCalls = 0;
+	constructor(private readonly canPauseReceive: boolean) {
+		super();
+	}
+	get state(): TransportState {
+		return this._state;
+	}
+	get capabilities(): TransportCapabilities {
+		return {
+			canSend: true,
+			canSubscribe: true,
+			canPublish: true,
+			canPauseReceive: this.canPauseReceive,
+		};
+	}
+	setToken(): void {}
+	setChannels(_channels: string[]): void {}
+	open(): void {
+		this._state = "open";
+		queueMicrotask(() => this.emit("open"));
+	}
+	close(): void {
+		this._state = "closed";
+	}
+	send(): void {}
+	pause(): void {
+		this.pauseCalls++;
+	}
+	resume(): void {
+		this.resumeCalls++;
+	}
+	deliver(msg: Partial<Message> & { type: string }): void {
+		this.emit("message", JSON.stringify(msg));
+	}
+	deliverRaw(data: string): void {
+		this.emit("message", data);
+	}
+}
+
+function makeClient(canPauseReceive = false): { client: SukkoClient; transport: FakeTransport } {
+	const transport = new FakeTransport(canPauseReceive);
+	const client = new SukkoClient({ transport, autoConnect: false });
+	return { client, transport };
+}
+
+function liveMessage(n: number): Message & { type: "message" } {
+	return { type: "message", ts: n, channel: "acme.trade", data: { n } };
+}
+
+describe("messages() iterator", () => {
+	it("yields live messages pushed by the transport", async () => {
+		const { client, transport } = makeClient();
+		const it = client.messages();
+		const pending = it.next();
+		transport.deliver(liveMessage(1));
+		const { value } = await pending;
+		expect(value).toMatchObject({ type: "message", channel: "acme.trade", data: { n: 1 } });
+	});
+
+	it("also fires the .on('message') emitter tap for the same frame", async () => {
+		const { client, transport } = makeClient();
+		const tapped: unknown[] = [];
+		client.on("message", (m) => tapped.push(m));
+		const it = client.messages();
+		const pending = it.next();
+		transport.deliver(liveMessage(7));
+		await pending;
+		expect(tapped).toHaveLength(1); // the tap fired alongside the iterator
+	});
+
+	it("drops a malformed frame and keeps the pump alive", async () => {
+		const { client, transport } = makeClient();
+		const it = client.messages();
+		const pending = it.next();
+		transport.deliverRaw("{not valid json");
+		transport.deliver(liveMessage(2)); // the next good frame still arrives
+		const { value } = await pending;
+		expect(value).toMatchObject({ data: { n: 2 } });
+	});
+
+	it("drops an unknown message type and keeps the pump alive (forward-compat)", async () => {
+		const { client, transport } = makeClient();
+		const it = client.messages();
+		const pending = it.next();
+		transport.deliver({ type: "some_future_type", whatever: true } as never);
+		transport.deliver(liveMessage(3));
+		const { value } = await pending;
+		expect(value).toMatchObject({ data: { n: 3 } });
+	});
+
+	it("ends the iterator when the client disconnects (lifetime-scoped)", async () => {
+		const { client } = makeClient();
+		const it = client.messages();
+		const pending = it.next();
+		client.disconnect();
+		expect(await pending).toEqual({ value: undefined, done: true });
+	});
+
+	it("a throwing .on('message') listener breaks neither the messages() stream nor other listeners", async () => {
+		const { client, transport } = makeClient();
+		const other: number[] = [];
+		client.on("message", () => {
+			throw new Error("bad listener");
+		});
+		client.on("message", (m) => other.push((m as { data: { n: number } }).data.n));
+		const it = client.messages();
+		const pending = it.next();
+		transport.deliver(liveMessage(5));
+		const { value } = await pending;
+		expect(value).toMatchObject({ data: { n: 5 } }); // authoritative stream still delivered
+		expect(other).toEqual([5]); // the second listener still fired despite the first throwing
+	});
+
+	it("rejects a second concurrent messages() consumer without corrupting the first", async () => {
+		const { client } = makeClient();
+		const a = client.messages();
+		void a.next(); // A becomes the active consumer
+		const b = client.messages();
+		await expect(b.next()).rejects.toThrow(/single-consumer/);
+	});
+});
+
+describe("back-pressure (by mechanism)", () => {
+	it("pauses exactly once when the buffer fills, not before, and resumes once on drain", async () => {
+		const { client, transport } = makeClient(true);
+		const it = client.messages();
+		const first = it.next(); // activate the consumer (queueConsumer = true)
+		transport.deliver(liveMessage(0));
+		await first; // consumed frame 0 → queue empty again
+
+		// Fill to exactly the bound (256) but not over — no pause yet.
+		for (let i = 1; i <= 256; i++) transport.deliver(liveMessage(i));
+		expect(transport.pauseCalls).toBe(1); // paused precisely when the 256th push filled the buffer
+		transport.deliver(liveMessage(257)); // over capacity, already paused → no re-pause
+		expect(transport.pauseCalls).toBe(1);
+
+		// Drain — resume fires once, the first pull that drops below capacity.
+		for (let i = 0; i < 5; i++) await it.next();
+		expect(transport.resumeCalls).toBe(1);
+	});
+
+	it("never pauses an incapable transport — the queue absorbs overflow instead", async () => {
+		const { client, transport } = makeClient(false);
+		const it = client.messages();
+		const first = it.next();
+		transport.deliver(liveMessage(0));
+		await first;
+		for (let i = 1; i <= 300; i++) transport.deliver(liveMessage(i));
+		expect(transport.pauseCalls).toBe(0); // canPauseReceive: false → overflow policy handles it
+	});
+});
+
+describe("stable message identity (mid) — sukko#241", () => {
+	it("exposes mid on live, replay, and history deliveries alike", async () => {
+		const { client, transport } = makeClient();
+		const it = client.messages();
+
+		const live = it.next();
+		transport.deliver({
+			type: "message",
+			ts: 1,
+			channel: "acme.trade",
+			data: {},
+			pos: "2-1",
+			mid: "9c5b1f0a-2-1",
+		});
+		expect((await live).value).toMatchObject({ type: "message", mid: "9c5b1f0a-2-1" });
+
+		const replay = it.next();
+		transport.deliverRaw(
+			JSON.stringify({
+				type: "replay_message",
+				channel: "acme.trade",
+				ts: 2,
+				data: {},
+				pos: "2-2",
+				mid: "9c5b1f0a-2-2",
+			}),
+		);
+		expect((await replay).value).toMatchObject({ type: "replay_message", mid: "9c5b1f0a-2-2" });
+
+		const history = it.next();
+		transport.deliver({
+			type: "message",
+			ts: 3,
+			channel: "acme.trade",
+			data: {},
+			history: true,
+			pos: "1-9",
+			mid: "4f8a2e6b-1-9",
+		});
+		expect((await history).value).toMatchObject({
+			type: "message",
+			history: true,
+			mid: "4f8a2e6b-1-9",
+		});
+	});
+
+	it("types mid as string | undefined on the delivered Message (identity, not cursor)", async () => {
+		const { client, transport } = makeClient();
+		const it = client.messages();
+		const pending = it.next();
+		transport.deliver({ ...liveMessage(1), mid: "abc" });
+		const value = (await pending).value as Message;
+		const mid: string | undefined = value.mid; // compile-time: the field is part of the model
+		expect(mid).toBe("abc");
+	});
+
+	it("leaves mid undefined when the server omits it (servers predating the field)", async () => {
+		const { client, transport } = makeClient();
+		const it = client.messages();
+		const pending = it.next();
+		transport.deliver(liveMessage(1));
+		const value = (await pending).value as Message;
+		expect(value.mid).toBeUndefined();
+	});
+});
