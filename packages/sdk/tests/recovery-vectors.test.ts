@@ -3,7 +3,7 @@
 // RecoveryEngine via a thin VectorMachine adapter — proving the language-neutral schema binds to
 // this SDK's pure FSM and that its canonical actions match the contract's expected effects.
 
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { Clock } from "../src/_clock";
@@ -67,9 +67,17 @@ function loadScenario(rel: string): VectorScenario {
 }
 
 describe("recovery parity vectors", () => {
-	it("recovery/gap-replay-basic: idle gap → one replay from last_pos; complete → idle", () => {
-		const scenario = loadScenario("recovery/gap-replay-basic.json");
-		expect(scenario.machine).toBe("recovery");
-		expect(runScenario(new RecoveryVectorMachine(), scenario)).toEqual(scenario.expect);
-	});
+	const recoveryDir = join(VECTORS_DIR, "recovery");
+	const files = readdirSync(recoveryDir)
+		.filter((f) => f.endsWith(".json"))
+		.sort();
+	// Every vendored recovery vector replays through the real RecoveryEngine and must produce the
+	// scenario's canonical actions — adding a scenario is one JSON file (vendored), no test change.
+	for (const file of files) {
+		it(`replays ${file} to its canonical actions`, () => {
+			const scenario = loadScenario(`recovery/${file}`);
+			expect(scenario.machine).toBe("recovery");
+			expect(runScenario(new RecoveryVectorMachine(), scenario)).toEqual(scenario.expect);
+		});
+	}
 });
