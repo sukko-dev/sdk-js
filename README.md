@@ -273,6 +273,19 @@ bun run lint         # Lint & format check
 bun run token ...    # Generate test JWT tokens
 ```
 
+### Cross-SDK parity vectors
+
+Behavioral parity with the Go and Python SDKs is verified against a language-neutral
+**vector corpus** — a contract artifact housed in the platform repo next to the AsyncAPI
+([platform ADR-0023], [ADR-0004]) and vendored here checksum-pinned under
+`packages/sdk/contract/vectors/`. Each scenario's inputs replay through this SDK's pure state
+machines (recovery, auth, subscriptions) and must produce the identical canonical action
+sequence every SDK produces. The vendored corpus is excluded from formatting so it stays
+byte-identical to the platform source.
+
+[platform ADR-0023]: https://github.com/sukko-dev/sukko/blob/main/docs/adr/0023-sdk-parity-vectors-are-a-contract-artifact.md
+[ADR-0004]: docs/adr/0004-parity-vectors-vendored-from-the-platform-contract.md
+
 ## Contributing
 
 Unsolicited pull requests are not accepted. If you have a change you think

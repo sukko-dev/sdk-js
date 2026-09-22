@@ -29,7 +29,7 @@
 		}
 	},
 	"files": {
-		"ignore": ["node_modules", "dist", "coverage", "*.d.ts", "*.d.cts"]
+		"ignore": ["node_modules", "dist", "coverage", "*.d.ts", "*.d.cts", "**/contract/vectors/**"]
 	},
 	"overrides": [
 		{
