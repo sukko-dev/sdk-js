@@ -696,16 +696,18 @@ export class SukkoClient extends TypedEventEmitter<SukkoClientEvents> {
 		// Per-close-code reconnect policy.
 		if (
 			code === CLOSE_CODES.NORMAL || // 1000 clean shutdown
-			code === CLOSE_CODES.POLICY_VIOLATION || // 1008 policy violation — not transient
 			code === CLOSE_CODES.FORCE_DISCONNECT // 4000 operator force-disconnect — terminal
 		) {
-			// TODO: 1008 and force_disconnect should also surface a TYPED error on the error channel
+			// TODO: force_disconnect should also surface a TYPED error on the error channel.
 			// Deferred to the supervisor rewrite that builds that channel —
 			// until then the terminal cause is observable via the `close` event's code (emitted above).
 			this.setState("disconnected");
 			return;
 		}
-		// 1001 going-away, 1011 internal-error, 1006/abnormal, unknown → transient, reconnect with backoff.
+		// 1001 going-away, 1008 policy-violation (retryable, ADR-0024), 1009 message-too-big,
+		// 1011 internal-error, 1006/abnormal, unknown → transient, reconnect with backoff. A 1008 from
+		// revocation is re-rejected at the reconnect handshake (auth layer); a slow-client 1008 either
+		// recovers or recurs under growing backoff — never a tight loop.
 		void this.handleReconnect();
 	}
 

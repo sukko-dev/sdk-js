@@ -432,18 +432,19 @@ describe("SSE client — reactive auth (401 → UNAUTHORIZED)", () => {
 		client.disconnect();
 	});
 
-	it("a 403 (POLICY_VIOLATION 1008) is terminal — no reactive auth, no getToken", async () => {
+	it("a 403 (POLICY_VIOLATION 1008) reconnects with backoff, not reactive auth (ADR-0024)", async () => {
 		const getToken = vi.fn(async () => "fresh-jwt");
 		const { client, transport } = makeReactiveClient({ getToken });
 		client.subscribe(["acme.a"]);
 		await flush();
-		const openCountBefore = transport.openCount;
+		void transport;
 
-		transport.simulateClose(1008); // 403 → terminal, distinct from the 4001 reactive path
+		// 1008 is retryable with bounded backoff (ADR-0024), not terminal, and does NOT trigger the
+		// reactive-auth path — that gate keys on 4001 exactly, so getToken is never called here.
+		transport.simulateClose(1008);
 		await flush();
-		expect(client.state).toBe("disconnected");
-		expect(getToken).not.toHaveBeenCalled(); // the gate keys on 4001 exactly
-		expect(transport.openCount).toBe(openCountBefore);
+		expect(client.state).toBe("reconnecting");
+		expect(getToken).not.toHaveBeenCalled();
 	});
 
 	it("a canSend (WS-shaped) transport emitting 4001 falls through to a plain reconnect — no getToken", async () => {

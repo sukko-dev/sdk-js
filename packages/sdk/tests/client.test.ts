@@ -661,7 +661,7 @@ describe("SukkoClient", () => {
 			client.disconnect();
 		});
 
-		it("reconnects on internal_error (1011) but is terminal on policy_violation (1008)", async () => {
+		it("reconnects on internal_error (1011), policy_violation (1008), and message_too_big (1009)", async () => {
 			const t1 = new MockTransport();
 			const c1 = new SukkoClient({ transport: t1, autoConnect: true, reconnect: true });
 			await vi.advanceTimersByTimeAsync(0);
@@ -669,11 +669,21 @@ describe("SukkoClient", () => {
 			expect(c1.state).toBe("reconnecting"); // 1011 transient
 			c1.disconnect();
 
+			// 1008 is retryable with bounded backoff, NOT terminal (ADR-0024) — revocation is
+			// re-rejected at the reconnect handshake, not this close code.
 			const t2 = new MockTransport();
 			const c2 = new SukkoClient({ transport: t2, autoConnect: true, reconnect: true });
 			await vi.advanceTimersByTimeAsync(0);
 			t2.simulateClose(CLOSE_CODES.POLICY_VIOLATION);
-			expect(c2.state).toBe("disconnected"); // 1008 terminal
+			expect(c2.state).toBe("reconnecting"); // 1008 transient
+			c2.disconnect();
+
+			const t3 = new MockTransport();
+			const c3 = new SukkoClient({ transport: t3, autoConnect: true, reconnect: true });
+			await vi.advanceTimersByTimeAsync(0);
+			t3.simulateClose(CLOSE_CODES.MESSAGE_TOO_BIG);
+			expect(c3.state).toBe("reconnecting"); // 1009 transient
+			c3.disconnect();
 		});
 
 		it("is terminal on a REMOTE 4000 (operator force_disconnect), no reconnect", async () => {
