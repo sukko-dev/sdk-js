@@ -1,6 +1,6 @@
 # ADR-0002: Derive the SDK from versioned contracts, prove parity with scenario vectors
 
-**Status**: Accepted
+**Status**: Accepted (location + reference clauses Superseded in part by ADR-0004)
 **Date**: 2026-08-21
 **Ticket**: feat/sdk-contract-parity
 
