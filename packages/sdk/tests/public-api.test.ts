@@ -48,6 +48,7 @@ describe("public API — CLOSE_CODES", () => {
 			"GOING_AWAY",
 			"HEARTBEAT_TIMEOUT",
 			"INTERNAL_ERROR",
+			"MESSAGE_TOO_BIG",
 			"NORMAL",
 			"POLICY_VIOLATION",
 			"UNAUTHORIZED",

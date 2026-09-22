@@ -37,10 +37,16 @@ export const SUKKO_DEFAULTS = {
 export const CLOSE_CODES = {
 	/** Normal closure (client or server initiated). */
 	NORMAL: 1000,
-	/** Server graceful shutdown. */
+	/** Going away (standard). The Sukko server does not emit 1001 — graceful shutdown closes with
+	 * 1008 — but the SDK tolerates it as a transient, reconnectable close. */
 	GOING_AWAY: 1001,
-	/** Policy violation — slow client disconnected by server. */
+	/** Policy violation — slow client, or server-initiated disconnect (shutdown / revocation).
+	 * Retryable with bounded backoff, NOT terminal (ADR-0024): a revoked credential is re-rejected
+	 * at the reconnect handshake, so termination belongs to the auth layer, not this code. */
 	POLICY_VIOLATION: 1008,
+	/** Message too big — the server rejected an oversized client frame. Transient (the SDK
+	 * validates publish size locally, so it will not resend the same frame). */
+	MESSAGE_TOO_BIG: 1009,
 	/** Server internal error. */
 	INTERNAL_ERROR: 1011,
 	/** Local (self-initiated) close: heartbeat pong timeout. Same numeric code as FORCE_DISCONNECT, but a local timeout never reaches `handleTransportClose` — see the NOTE below. */
