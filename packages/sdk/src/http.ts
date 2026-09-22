@@ -25,8 +25,10 @@ export type TokenProvider = () => string | undefined;
 export interface HttpApiOptions {
 	/** The gateway HTTP origin, e.g. `https://gw.example.com` (trailing slash tolerated). */
 	baseUrl: string;
-	/** Current-credential getter, called per request. */
+	/** Current JWT getter, called per request. */
 	token: TokenProvider;
+	/** Current API-key getter, called per request when no JWT is set. */
+	apiKey?: TokenProvider;
 	/** Injectable `fetch`. Default: the global `fetch`. */
 	fetch?: FetchLike;
 	/** Injectable clock for the request timeout. Default: SystemClock. */
@@ -52,6 +54,7 @@ export interface RequestOptions {
 export class HttpApi {
 	private readonly baseUrl: string;
 	private readonly token: TokenProvider;
+	private readonly apiKey: TokenProvider | undefined;
 	private readonly fetchImpl: FetchLike;
 	private readonly clock: Clock;
 	private readonly timeoutMs: number;
@@ -59,6 +62,7 @@ export class HttpApi {
 	constructor(options: HttpApiOptions) {
 		this.baseUrl = options.baseUrl.replace(/\/$/, "");
 		this.token = options.token;
+		this.apiKey = options.apiKey;
 		this.fetchImpl = options.fetch ?? ((input, init) => fetch(input, init));
 		this.clock = options.clock ?? new SystemClock();
 		this.timeoutMs = options.timeoutMs ?? SUKKO_DEFAULTS.connectTimeoutMs;
@@ -91,7 +95,15 @@ export class HttpApi {
 		const token = this.token();
 		registerSecret(token); // §IX: mask it if a URL/header ever lands in an error string
 		const headers: Record<string, string> = {};
-		if (token) headers.Authorization = `Bearer ${token}`;
+		if (token) {
+			headers.Authorization = `Bearer ${token}`;
+		} else {
+			const apiKey = this.apiKey?.();
+			if (apiKey) {
+				registerSecret(apiKey);
+				headers["X-API-Key"] = apiKey;
+			}
+		}
 		const body =
 			options.body ?? (options.json !== undefined ? JSON.stringify(options.json) : undefined);
 		if (body !== undefined) headers["Content-Type"] = "application/json";

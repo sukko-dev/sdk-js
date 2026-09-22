@@ -33,6 +33,7 @@ export class WebSocketNodeTransport
 {
 	private ws: WebSocket | null = null;
 	private token: string;
+	private apiKey: string;
 	/** Public so the client can derive the gateway HTTP origin for REST/push (Transport.url). */
 	readonly url: string;
 	private readonly connectionTimeout: number;
@@ -43,6 +44,7 @@ export class WebSocketNodeTransport
 		super();
 		this.url = options.url;
 		this.token = options.token ?? "";
+		this.apiKey = options.apiKey ?? "";
 		this.connectionTimeout = options.connectionTimeout ?? DEFAULT_CONNECTION_TIMEOUT;
 		this.WebSocketCtor = options.WebSocket ?? WebSocket;
 	}
@@ -72,6 +74,10 @@ export class WebSocketNodeTransport
 		this.token = token;
 	}
 
+	setApiKey(apiKey: string): void {
+		this.apiKey = apiKey;
+	}
+
 	setChannels(_channels: string[]): void {
 		// No-op — WebSocket subscribes in-band via `subscribe` frames (canSubscribe: true).
 	}
@@ -88,14 +94,15 @@ export class WebSocketNodeTransport
 	open(): void {
 		this.cleanup();
 
-		let url = this.url;
-		if (this.token) {
-			const separator = url.includes("?") ? "&" : "?";
-			url = `${url}${separator}token=${encodeURIComponent(this.token)}`;
-		}
+		// Off-browser we can set request headers, so credentials go in headers (never the URL,
+		// which risks logging the JWT). Prefer the JWT (Authorization: Bearer); fall back to the
+		// API key (X-API-Key). Both are gateway-accepted.
+		const headers: Record<string, string> = {};
+		if (this.token) headers.Authorization = `Bearer ${this.token}`;
+		else if (this.apiKey) headers["X-API-Key"] = this.apiKey;
 
 		try {
-			this.ws = new this.WebSocketCtor(url);
+			this.ws = new this.WebSocketCtor(this.url, { headers });
 		} catch {
 			this.emit("error");
 			return;

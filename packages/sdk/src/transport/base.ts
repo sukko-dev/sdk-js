@@ -47,8 +47,11 @@ export interface Transport {
 	close(code?: number, reason?: string): void;
 	/** Send a raw string message. */
 	send(data: string): void;
-	/** Update the token used for the next connection. */
+	/** Update the JWT token used for the next connection. */
 	setToken(token: string): void;
+	/** Update the API-key credential used for the next connection (empty string clears it). Used
+	 * only when no JWT is set — the transport prefers the JWT. */
+	setApiKey(apiKey: string): void;
 	/**
 	 * Set the channel set applied at the next `open()`. The mirror of `setToken()` for transports whose
 	 * subscriptions are connect-time (`canSubscribe: false` — SSE bakes them into the request URL). A

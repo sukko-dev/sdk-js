@@ -33,6 +33,7 @@ class FakeTransport extends TypedEventEmitter<TransportEvents> implements Transp
 		};
 	}
 	setToken(): void {}
+	setApiKey(): void {}
 	setChannels(_channels: string[]): void {}
 	open(): void {
 		this._state = "open";

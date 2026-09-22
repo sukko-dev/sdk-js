@@ -24,8 +24,10 @@ export interface SseTransportOptions {
 	url: string;
 	/** Channels to stream — a required, connect-time subscription (comma-joined into the query). */
 	channels: string[];
-	/** JWT or api-key presented as `Authorization: Bearer`. */
+	/** JWT presented as `Authorization: Bearer`. */
 	token?: string;
+	/** API key presented as the `X-API-Key` header (used only when no JWT is set). */
+	apiKey?: string;
 	/** Injectable clock for the idle + connect timers. Default: SystemClock. */
 	clock?: Clock;
 	/** Injectable `fetch`. Default: the global `fetch`. */
@@ -60,6 +62,7 @@ export class SseTransport extends TypedEventEmitter<TransportEvents> implements 
 	private readonly baseUrl: string;
 	private channels: string[]; // connect-time subscribe set; the client updates it via setChannels()
 	private token: string;
+	private apiKey: string;
 	private readonly clock: Clock;
 	private readonly fetchImpl: FetchLike;
 	private readonly idleTimeoutMs: number;
@@ -86,6 +89,7 @@ export class SseTransport extends TypedEventEmitter<TransportEvents> implements 
 		this.baseUrl = options.url;
 		this.channels = options.channels;
 		this.token = options.token ?? "";
+		this.apiKey = options.apiKey ?? "";
 		this.clock = options.clock ?? new SystemClock();
 		this.fetchImpl = options.fetch ?? ((input, init) => fetch(input, init));
 		this.idleTimeoutMs = options.idleTimeoutMs ?? SUKKO_DEFAULTS.sseIdleTimeoutMs;
@@ -107,6 +111,10 @@ export class SseTransport extends TypedEventEmitter<TransportEvents> implements 
 
 	get capabilities(): TransportCapabilities {
 		return { canSend: false, canSubscribe: false, canPublish: false, canPauseReceive: false };
+	}
+
+	setApiKey(apiKey: string): void {
+		this.apiKey = apiKey;
 	}
 
 	setToken(token: string): void {
@@ -158,6 +166,7 @@ export class SseTransport extends TypedEventEmitter<TransportEvents> implements 
 	private async run(signal: AbortSignal): Promise<void> {
 		const headers: Record<string, string> = { Accept: "text/event-stream" };
 		if (this.token) headers.Authorization = `Bearer ${this.token}`;
+		else if (this.apiKey) headers["X-API-Key"] = this.apiKey;
 		if (this.lastEventId !== undefined) headers["Last-Event-ID"] = this.lastEventId;
 
 		const connectTimer = this.armConnectTimeout();
