@@ -53,8 +53,10 @@ function deferred(): Deferred {
 }
 
 export interface AuthManagerOptions {
-	/** The initial credential (JWT or api-key). */
+	/** The initial JWT credential. */
 	token?: string;
+	/** Static API-key credential — the JWT alternative; never refreshed, superseded once a JWT is set. */
+	apiKey?: string;
 	/** Async callback returning a fresh token; enables proactive refresh. */
 	getToken?: () => Promise<string>;
 	/** Send an `auth` frame carrying `token`. */
@@ -71,6 +73,7 @@ export interface AuthManagerOptions {
  * (`onAuthAck`/`onAuthError`) and its own proactive timer. Client-lifetime; `close()` per epoch. */
 export class AuthManager {
 	private token: string | undefined;
+	private readonly apiKey: string | undefined;
 	private readonly getToken: (() => Promise<string>) | undefined;
 	private readonly send: (token: string) => void;
 	private readonly clock: Clock;
@@ -83,6 +86,7 @@ export class AuthManager {
 
 	constructor(options: AuthManagerOptions) {
 		this.token = options.token;
+		this.apiKey = options.apiKey;
 		this.getToken = options.getToken;
 		this.send = options.send;
 		this.clock = options.clock;
@@ -93,6 +97,11 @@ export class AuthManager {
 	/** The current credential (used for the next connect's `setToken`). */
 	get currentToken(): string | undefined {
 		return this.token;
+	}
+
+	/** The static API-key credential, if configured. The transport uses it only when no JWT is set. */
+	get currentApiKey(): string | undefined {
+		return this.apiKey;
 	}
 
 	/** Set the credential for the next connect WITHOUT sending `auth` (offline / escalation-deferred). */

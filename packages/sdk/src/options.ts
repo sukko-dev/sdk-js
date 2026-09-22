@@ -71,6 +71,9 @@ export interface SukkoClientOptions {
 	transport: Transport;
 	/** JWT token for authentication. Passed to transport via `setToken()`. */
 	token?: string;
+	/** API key for authentication (mutually the JWT alternative). Sent as `?api_key=` (browser WS)
+	 * or the `X-API-Key` header (node WS / SSE / REST); superseded by a JWT once `escalate()` runs. */
+	apiKey?: string;
 	/** Enable automatic reconnection. Default: true. */
 	reconnect?: boolean;
 	/** Max reconnect attempts before the client gives up (`0` = unlimited). Default: 5. */

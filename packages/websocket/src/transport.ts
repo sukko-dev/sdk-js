@@ -33,6 +33,7 @@ const DEFAULT_CONNECTION_TIMEOUT = 10000;
 export class WebSocketTransport extends TypedEventEmitter<TransportEvents> implements Transport {
 	private ws: WebSocket | null = null;
 	private token: string;
+	private apiKey: string;
 	/** Public so the client can derive the gateway HTTP origin for REST/push (Transport.url). */
 	readonly url: string;
 	private readonly connectionTimeout: number;
@@ -43,6 +44,7 @@ export class WebSocketTransport extends TypedEventEmitter<TransportEvents> imple
 		super();
 		this.url = options.url;
 		this.token = options.token ?? "";
+		this.apiKey = options.apiKey ?? "";
 		this.connectionTimeout = options.connectionTimeout ?? DEFAULT_CONNECTION_TIMEOUT;
 		this.WebSocketCtor = options.WebSocket;
 	}
@@ -74,6 +76,10 @@ export class WebSocketTransport extends TypedEventEmitter<TransportEvents> imple
 		this.token = token;
 	}
 
+	setApiKey(apiKey: string): void {
+		this.apiKey = apiKey;
+	}
+
 	setChannels(_channels: string[]): void {
 		// No-op — WebSocket subscribes in-band via `subscribe` frames (canSubscribe: true). The client
 		// drives subscriptions directly; connect-time channels are an SSE-only concern.
@@ -91,9 +97,14 @@ export class WebSocketTransport extends TypedEventEmitter<TransportEvents> imple
 		this.cleanup();
 
 		let url = this.url;
+		// Prefer the JWT (?token=); fall back to the API key (?api_key=). Browsers cannot set
+		// WebSocket request headers, so both credentials travel as query params here.
 		if (this.token) {
 			const separator = url.includes("?") ? "&" : "?";
 			url = `${url}${separator}token=${encodeURIComponent(this.token)}`;
+		} else if (this.apiKey) {
+			const separator = url.includes("?") ? "&" : "?";
+			url = `${url}${separator}api_key=${encodeURIComponent(this.apiKey)}`;
 		}
 
 		const WS = this.WebSocketCtor ?? this.resolveWebSocket();

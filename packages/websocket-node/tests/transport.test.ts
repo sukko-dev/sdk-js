@@ -14,7 +14,10 @@ class FakeWs extends EventEmitter {
 	pause = vi.fn();
 	resume = vi.fn();
 
-	constructor(readonly url: string) {
+	constructor(
+		readonly url: string,
+		readonly options?: { headers?: Record<string, string> },
+	) {
 		super();
 		FakeWs.last = this;
 	}
@@ -129,5 +132,36 @@ describe("WebSocketNodeTransport", () => {
 		} finally {
 			vi.useRealTimers();
 		}
+	});
+});
+
+describe("WebSocketNodeTransport auth headers", () => {
+	it("sends the JWT as an Authorization: Bearer header (not the URL)", () => {
+		const t = new WebSocketNodeTransport({ url: "wss://x/ws", WebSocket: Ctor, token: "my-jwt" });
+		t.open();
+		const ws = grab();
+		expect(ws.url).toBe("wss://x/ws"); // credential never in the URL off-browser
+		expect(ws.options?.headers?.Authorization).toBe("Bearer my-jwt");
+	});
+
+	it("sends the api key as an X-API-Key header when no JWT is set", () => {
+		const t = new WebSocketNodeTransport({ url: "wss://x/ws", WebSocket: Ctor, apiKey: "my-key" });
+		t.open();
+		const ws = grab();
+		expect(ws.options?.headers?.["X-API-Key"]).toBe("my-key");
+		expect(ws.options?.headers?.Authorization).toBeUndefined();
+	});
+
+	it("prefers the JWT over the api key when both are set", () => {
+		const t = new WebSocketNodeTransport({
+			url: "wss://x/ws",
+			WebSocket: Ctor,
+			token: "jwt",
+			apiKey: "key",
+		});
+		t.open();
+		const ws = grab();
+		expect(ws.options?.headers?.Authorization).toBe("Bearer jwt");
+		expect(ws.options?.headers?.["X-API-Key"]).toBeUndefined();
 	});
 });

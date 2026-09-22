@@ -42,6 +42,8 @@ class MockTransport extends TypedEventEmitter<TransportEvents> implements Transp
 		return this._token;
 	}
 
+	setApiKey(_apiKey: string): void {}
+
 	setToken(token: string): void {
 		this._token = token;
 	}

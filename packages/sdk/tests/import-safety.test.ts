@@ -29,6 +29,7 @@ class CountingTransport extends TypedEventEmitter<TransportEvents> implements Tr
 		return "https://gw.example.com";
 	}
 	setToken(): void {}
+	setApiKey(): void {}
 	setChannels(): void {}
 	send(): void {}
 	pause(): void {}

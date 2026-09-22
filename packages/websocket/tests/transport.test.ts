@@ -111,6 +111,20 @@ describe("WebSocketTransport", () => {
 			expect(lastWs!.url).toBe("ws://localhost:3002/ws?token=my-jwt");
 		});
 
+		it("appends api_key as query parameter when apiKey is set", () => {
+			const transport = createTransport({ apiKey: "my-key" });
+			transport.open();
+
+			expect(lastWs!.url).toBe("ws://localhost:3002/ws?api_key=my-key");
+		});
+
+		it("prefers the JWT over the api key when both are set", () => {
+			const transport = createTransport({ token: "my-jwt", apiKey: "my-key" });
+			transport.open();
+
+			expect(lastWs!.url).toBe("ws://localhost:3002/ws?token=my-jwt");
+		});
+
 		it("appends token with & when URL already has query params", () => {
 			const transport = createTransport({
 				url: "ws://localhost/ws?foo=bar",

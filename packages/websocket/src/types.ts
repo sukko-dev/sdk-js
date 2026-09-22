@@ -15,6 +15,9 @@ export interface WebSocketTransportOptions {
 	 * each `open()`, overriding this initial value.
 	 */
 	token?: string;
+	/** Initial API key. Appended as `?api_key=` (used only when no JWT is set; browsers cannot set
+	 * WebSocket headers, so the API key travels as a query param — the gateway accepts both forms). */
+	apiKey?: string;
 	/** Timeout in ms for initial connection. Default: 10000. */
 	connectionTimeout?: number;
 	/** Injectable WebSocket constructor for testing or SSR environments. */

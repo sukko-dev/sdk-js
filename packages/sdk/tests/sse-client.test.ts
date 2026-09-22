@@ -46,6 +46,8 @@ class FakeSseTransport extends TypedEventEmitter<TransportEvents> implements Tra
 	get url(): string {
 		return "https://gw.example.com";
 	}
+	setApiKey(_apiKey: string): void {}
+
 	setToken(token: string): void {
 		this.token = token;
 	}

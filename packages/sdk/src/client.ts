@@ -61,7 +61,10 @@ export interface RestPublishResult {
 // The credential options (`token`/`getToken`) are owned by the AuthManager; `clock`/`transport`/`fetch`/
 // `baseUrl` are consumed at construction. What remains are the resolved timing/reconnect/queue knobs.
 type ResolvedOptions = Required<
-	Omit<SukkoClientOptions, "transport" | "token" | "getToken" | "clock" | "baseUrl" | "fetch">
+	Omit<
+		SukkoClientOptions,
+		"transport" | "token" | "apiKey" | "getToken" | "clock" | "baseUrl" | "fetch"
+	>
 >;
 
 /**
@@ -183,6 +186,7 @@ export class SukkoClient extends TypedEventEmitter<SukkoClientEvents> {
 
 		this.auth = new AuthManager({
 			token: options.token,
+			apiKey: options.apiKey,
 			getToken: options.getToken,
 			send: (token) => this.send({ type: "auth", data: { token } }),
 			clock: this.clock,
@@ -204,6 +208,7 @@ export class SukkoClient extends TypedEventEmitter<SukkoClientEvents> {
 				? new HttpApi({
 						baseUrl: httpBase,
 						token: () => this.auth.currentToken,
+						apiKey: () => this.auth.currentApiKey,
 						clock: this.clock,
 						fetch: options.fetch,
 					})
@@ -336,6 +341,7 @@ export class SukkoClient extends TypedEventEmitter<SukkoClientEvents> {
 		this.teardownEpoch(); // abort any stale epoch before opening a fresh one
 		this.epoch = new AbortController();
 		this.transport.setToken(this.auth.currentToken ?? "");
+		this.transport.setApiKey(this.auth.currentApiKey ?? "");
 		// Feed the current desired set in before opening (the mirror of setToken; §XV: the desired set is
 		// the single source of truth, so a reconnect resumes exactly what is wanted). WebSocket no-ops
 		// setChannels and subscribes via frames after open.

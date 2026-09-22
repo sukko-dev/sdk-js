@@ -148,6 +148,7 @@ setSukkoClient(client);
 - **Full protocol support** — subscribe, unsubscribe, publish, heartbeat, reconnect with replay
 - **Automatic reconnection** — exponential backoff with jitter, then indefinite retry
 - **Reference-counted subscriptions** — multiple components share one subscription
+- **JWT or API-key auth** — `token` (JWT) or `apiKey`; over WebSocket the browser transport sends them as `?token=`/`?api_key=` query params (browsers can't set WS headers) and the Node transport as `Authorization: Bearer`/`X-API-Key` headers; SSE/REST always use headers
 - **Mid-connection auth refresh** — update JWT tokens without disconnecting
 - **SSR-safe** — no browser globals accessed during server-side rendering
 - **Tree-shakeable** — dual ESM + CJS builds with isolated declarations
