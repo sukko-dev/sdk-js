@@ -370,3 +370,56 @@ describe("RecoveryEngine — parity-vector driven", () => {
 		expect(actual).toEqual([{ action: "send_replay", channel: "acme.x", from_pos: "2-100" }]);
 	});
 });
+
+describe("RecoveryEngine — backpressure suspends the deadline (ADR-0025)", () => {
+	it("does NOT interrupt a replay while the consumer is backpressured, but does after resume", () => {
+		const { engine, clock } = makeEngine();
+		engine.handleGap("acme.x", "2-100"); // replaying, deadline at t=DEADLINE
+		engine.handleBackpressure(true); // consumer stalled — frames stop arriving
+		clock.advanceSync(DEADLINE + 1); // a full window elapses with no frame
+		expect(engine.due()).toEqual([]); // suspended: the silence is the consumer's, not the server's
+		engine.handleBackpressure(false); // consumer resumes
+		clock.advanceSync(DEADLINE + 1); // now a genuinely silent window
+		expect(engine.due()).toEqual([
+			{
+				action: "raise_recovery_interrupted",
+				channel: "acme.x",
+				reason: expect.stringContaining("replay_complete"),
+			},
+		]);
+	});
+
+	it("suspends the window when a back-pressure episode opened AND closed within it", () => {
+		const { engine, clock } = makeEngine();
+		engine.handleGap("acme.x", "2-100"); // deadline at t=DEADLINE, armPauseEpisodes=0
+		engine.handleBackpressure(true);
+		engine.handleBackpressure(false); // episode opened+closed; paused=false now, but an episode occurred
+		clock.advanceSync(DEADLINE + 1);
+		expect(engine.due()).toEqual([]); // episode changed since arm → suspend (point-sampling `paused` would miss this)
+		clock.advanceSync(DEADLINE + 1); // a clean window, no new episode
+		expect(engine.due()).toEqual([
+			{
+				action: "raise_recovery_interrupted",
+				channel: "acme.x",
+				reason: expect.stringContaining("replay_complete"),
+			},
+		]);
+	});
+
+	it("also suspends an in-flight HISTORY deadline while backpressured", () => {
+		const { engine, clock } = makeEngine();
+		engine.noteHistoryRequest("acme.x"); // history deadline at t=DEADLINE
+		engine.handleBackpressure(true);
+		clock.advanceSync(DEADLINE + 1);
+		expect(engine.due()).toEqual([]); // suspended, not interrupted
+		engine.handleBackpressure(false);
+		clock.advanceSync(DEADLINE + 1);
+		expect(engine.due()).toEqual([
+			{
+				action: "raise_recovery_interrupted",
+				channel: "acme.x",
+				reason: expect.stringContaining("history_complete"),
+			},
+		]);
+	});
+});

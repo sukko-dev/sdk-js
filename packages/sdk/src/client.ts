@@ -286,6 +286,7 @@ export class SukkoClient extends TypedEventEmitter<SukkoClientEvents> {
 				if (this.transportPaused && !this.deliveryQueue.isFull) {
 					this.transport.resume();
 					this.transportPaused = false;
+					this.recovery.handleBackpressure(false);
 				}
 				yield result.value;
 			}
@@ -294,6 +295,7 @@ export class SukkoClient extends TypedEventEmitter<SukkoClientEvents> {
 			if (this.transportPaused) {
 				this.transport.resume();
 				this.transportPaused = false;
+				this.recovery.handleBackpressure(false);
 			}
 		}
 	}
@@ -313,6 +315,7 @@ export class SukkoClient extends TypedEventEmitter<SukkoClientEvents> {
 		) {
 			this.transport.pause();
 			this.transportPaused = true;
+			this.recovery.handleBackpressure(true); // suspend recovery deadlines while stalled (ADR-0025)
 		}
 	}
 

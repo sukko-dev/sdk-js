@@ -11,13 +11,18 @@ export interface AdvanceInput {
 	advance: number;
 }
 
+/** The delivery consumer stalled (true) / resumed (false) — a client-side condition. */
+export interface BackpressureInput {
+	backpressure: boolean;
+}
+
 /** A named event fed to the machine, with arbitrary canonical payload keys. */
 export interface EventInput {
 	event: string;
 	[key: string]: unknown;
 }
 
-export type VectorInput = AdvanceInput | EventInput;
+export type VectorInput = AdvanceInput | BackpressureInput | EventInput;
 
 /** A canonical action a machine emits: a snake_case `action` tag plus canonical arg keys. */
 export interface VectorAction {
@@ -39,6 +44,10 @@ export interface VectorMachine {
 
 export function isAdvance(input: VectorInput): input is AdvanceInput {
 	return typeof (input as AdvanceInput).advance === "number";
+}
+
+export function isBackpressure(input: VectorInput): input is BackpressureInput {
+	return typeof (input as BackpressureInput).backpressure === "boolean";
 }
 
 /** Replay a scenario's inputs through the machine and return the concatenated action list. */

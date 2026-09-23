@@ -1284,6 +1284,68 @@ describe("SukkoClient", () => {
 
 			client.disconnect();
 		});
+
+		it("does NOT raise recoveryInterrupted while the consumer is backpressured", async () => {
+			// A pause-capable transport: when the delivery queue fills, the client pauses receiving and
+			// MUST tell the recovery engine, so the detection deadline SUSPENDS instead of firing while
+			// the silence is the consumer's, not the server's (ADR-0025). Guards the client→engine wiring
+			// (deleting the handleBackpressure call passes every engine test and the parity vector).
+			class PausableTransport extends MockTransport {
+				pauseCalls = 0;
+				get capabilities(): TransportCapabilities {
+					return { canSend: true, canSubscribe: true, canPublish: true, canPauseReceive: true };
+				}
+				pause(): void {
+					this.pauseCalls++;
+				}
+			}
+			const transport = new PausableTransport();
+			const { client } = createClient({ transport });
+			client.connect();
+			await vi.advanceTimersByTimeAsync(0);
+
+			const interrupted = vi.fn();
+			client.on("recoveryInterrupted", interrupted);
+
+			// An active, non-draining consumer so back-pressure can engage.
+			const it = client.messages();
+			const first = it.next();
+			// Gap → replaying, detection deadline armed at +10s; the pending consumer pulls the gap.
+			transport.simulateMessage({
+				type: "gap",
+				channel: "tenant.BTC.trade",
+				last_pos: "2-100",
+				ts: Date.now(),
+			});
+			await first;
+			// Fill the delivery buffer (default 256) with undrained frames → transport pauses.
+			for (let i = 1; i <= 256; i++) {
+				transport.simulateMessage({
+					type: "message",
+					channel: "tenant.BTC.trade",
+					ts: Date.now(),
+					data: { i },
+				});
+			}
+			await vi.advanceTimersByTimeAsync(0);
+			expect(transport.pauseCalls).toBeGreaterThan(0); // sanity: back-pressure actually engaged
+
+			// A full deadline window elapses WHILE backpressured → the deadline must not fire.
+			await vi.advanceTimersByTimeAsync(10001);
+			expect(interrupted).not.toHaveBeenCalled();
+
+			// RESUME: drain the queue so the transport resumes (clears back-pressure → the client
+			// must tell the engine). Then a full window with no recovery frame MUST now interrupt —
+			// otherwise the engine stays paused forever and no deadline ever fires again (a silent
+			// wedge). This pins the resume-side wiring; draining through messages() exercises the
+			// loop-drain resume site (the iterator-finally site clears the same flag, so pinning one is
+			// enough — deleting BOTH resume calls fails this).
+			for (let i = 0; i < 10; i++) await it.next(); // drop below capacity → transport resumes
+			await vi.advanceTimersByTimeAsync(10001);
+			expect(interrupted).toHaveBeenCalledOnce();
+
+			client.disconnect();
+		});
 	});
 
 	describe("history", () => {
