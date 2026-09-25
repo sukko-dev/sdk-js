@@ -13,6 +13,7 @@ import {
 	type VectorMachine,
 	type VectorScenario,
 	isAdvance,
+	isBackpressure,
 	runScenario,
 } from "./_vectors";
 
@@ -42,6 +43,10 @@ class RecoveryVectorMachine implements VectorMachine {
 		this.engine.markConnected();
 	}
 	step(input: VectorInput) {
+		if (isBackpressure(input)) {
+			this.engine.handleBackpressure(input.backpressure);
+			return [];
+		}
 		if (isAdvance(input)) {
 			this.clock.t += input.advance;
 			return this.engine.due();

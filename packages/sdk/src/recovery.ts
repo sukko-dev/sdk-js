@@ -60,6 +60,7 @@ interface ChannelState {
 	lastReplayAt: number; // for the per-channel replay-floor rate limit
 	floorWake: number | null; // absolute time floor_wait may fire
 	deadline: number | null; // absolute "no recovery frame by now" idle deadline
+	armPauseEpisodes: number; // pauseEpisodes captured when `deadline` was armed (silence-suspension baseline)
 }
 
 function freshChannel(): ChannelState {
@@ -70,6 +71,7 @@ function freshChannel(): ChannelState {
 		lastReplayAt: Number.NEGATIVE_INFINITY,
 		floorWake: null,
 		deadline: null,
+		armPauseEpisodes: 0,
 	};
 }
 
@@ -88,7 +90,12 @@ export class RecoveryEngine {
 	private readonly deadline: number;
 	private readonly pos = new Map<string, string>();
 	private readonly channels = new Map<string, ChannelState>();
-	private readonly historyDeadline = new Map<string, number>();
+	private readonly historyDeadline = new Map<
+		string,
+		{ deadline: number; armPauseEpisodes: number }
+	>();
+	private paused = false;
+	private pauseEpisodes = 0; // monotonic; a false→true transition opens a back-pressure episode
 	private direct = false;
 	private connectedOnce = false;
 
@@ -170,14 +177,35 @@ export class RecoveryEngine {
 		rec.lastReplayAt = now;
 		rec.floorWake = null;
 		rec.deadline = now + this.deadline;
+		rec.armPauseEpisodes = this.pauseEpisodes;
 		return { action: "send_replay", channel, from_pos: fromPos };
 	}
 
 	/** A `replay_message` arrived — reset the idle deadline (measures server silence, not consumer speed). */
 	handleReplayMessage(channel: string): void {
 		const rec = this.channels.get(channel);
-		if (rec !== undefined && rec.phase === "replaying")
+		if (rec !== undefined && rec.phase === "replaying") {
 			rec.deadline = this.clock.now() + this.deadline;
+			rec.armPauseEpisodes = this.pauseEpisodes;
+		}
+	}
+
+	/**
+	 * The delivery consumer stalled (`paused=true`) or resumed (`false`). While stalled, recovery
+	 * frames stop arriving, so a detection deadline SUSPENDS rather than fires — the silence is the
+	 * consumer's, not the server's (platform ADR-0025; the JS half of Go's park-suspension). A
+	 * false→true transition opens a back-pressure EPISODE, so a stall that opens and closes entirely
+	 * within one deadline window still suspends that window — point-sampling `paused` alone would miss it.
+	 */
+	handleBackpressure(paused: boolean): void {
+		if (paused && !this.paused) this.pauseEpisodes++;
+		this.paused = paused;
+	}
+
+	/** True when the deadline's silence is the consumer's: currently backpressured, or an episode
+	 * opened since the deadline was armed. Mirrors Go's parked-now || episodes-changed suspension. */
+	private backpressureSuspends(armPauseEpisodes: number): boolean {
+		return this.paused || this.pauseEpisodes !== armPauseEpisodes;
 	}
 
 	/** A `replay_complete` arrived. Start the follow-up cycle if a gap landed mid-replay, else idle. */
@@ -215,24 +243,34 @@ export class RecoveryEngine {
 			) {
 				actions.push(this.beginReplay(rec, channel, rec.anchor, now));
 			} else if (rec.phase === "replaying" && rec.deadline !== null && now >= rec.deadline) {
-				rec.phase = "idle";
-				rec.deadline = null;
-				rec.followupAnchor = null;
-				actions.push({
-					action: "raise_recovery_interrupted",
-					channel,
-					reason: "no replay_complete before detection deadline",
-				});
+				if (this.backpressureSuspends(rec.armPauseEpisodes)) {
+					rec.deadline = now + this.deadline; // consumer stall, not server silence — re-arm, don't fire
+					rec.armPauseEpisodes = this.pauseEpisodes;
+				} else {
+					rec.phase = "idle";
+					rec.deadline = null;
+					rec.followupAnchor = null;
+					actions.push({
+						action: "raise_recovery_interrupted",
+						channel,
+						reason: "no replay_complete before detection deadline",
+					});
+				}
 			}
 		}
-		for (const [channel, at] of [...this.historyDeadline]) {
-			if (now >= at) {
-				this.historyDeadline.delete(channel);
-				actions.push({
-					action: "raise_recovery_interrupted",
-					channel,
-					reason: "no history_complete before detection deadline",
-				});
+		for (const [channel, entry] of [...this.historyDeadline]) {
+			if (now >= entry.deadline) {
+				if (this.backpressureSuspends(entry.armPauseEpisodes)) {
+					entry.deadline = now + this.deadline;
+					entry.armPauseEpisodes = this.pauseEpisodes;
+				} else {
+					this.historyDeadline.delete(channel);
+					actions.push({
+						action: "raise_recovery_interrupted",
+						channel,
+						reason: "no history_complete before detection deadline",
+					});
+				}
 			}
 		}
 		return actions;
@@ -245,7 +283,7 @@ export class RecoveryEngine {
 			if (rec.phase === "floor_wait" && rec.floorWake !== null) times.push(rec.floorWake);
 			if (rec.deadline !== null) times.push(rec.deadline);
 		}
-		for (const at of this.historyDeadline.values()) times.push(at);
+		for (const entry of this.historyDeadline.values()) times.push(entry.deadline);
 		return times.length > 0 ? Math.min(...times) : null;
 	}
 
@@ -253,13 +291,19 @@ export class RecoveryEngine {
 
 	/** Arm the detection deadline for an in-flight history request. */
 	noteHistoryRequest(channel: string): void {
-		this.historyDeadline.set(channel, this.clock.now() + this.deadline);
+		this.historyDeadline.set(channel, {
+			deadline: this.clock.now() + this.deadline,
+			armPauseEpisodes: this.pauseEpisodes,
+		});
 	}
 
 	/** A history `message` arrived — reset the idle deadline for that channel. */
 	handleHistoryMessage(channel: string): void {
 		if (this.historyDeadline.has(channel)) {
-			this.historyDeadline.set(channel, this.clock.now() + this.deadline);
+			this.historyDeadline.set(channel, {
+				deadline: this.clock.now() + this.deadline,
+				armPauseEpisodes: this.pauseEpisodes,
+			});
 		}
 	}
 
