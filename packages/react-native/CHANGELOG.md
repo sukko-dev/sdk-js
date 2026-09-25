@@ -1,5 +1,13 @@
 # @sukko/react-native
 
+## 2.0.0
+
+### Patch Changes
+
+- Updated dependencies [fd94001]
+- Updated dependencies [7b5abbb]
+  - @sukko/sdk@2.0.0
+
 ## 1.0.0
 
 ### Patch Changes
