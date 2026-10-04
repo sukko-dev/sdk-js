@@ -30,7 +30,7 @@
 		"test:watch": "vitest"
 	},
 	"peerDependencies": {
-		"@sukko/sdk": "workspace:*",
+		"@sukko/sdk": "^1.0.0",
 		"react": ">=18"
 	},
 	"devDependencies": {

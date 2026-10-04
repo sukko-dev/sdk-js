@@ -1,5 +1,6 @@
 {
 	"name": "@sukko/react-native",
+	"private": true,
 	"version": "1.0.0",
 	"description": "React Native push registration for the Sukko real-time SDK",
 	"type": "module",
@@ -30,7 +31,7 @@
 		"test:watch": "vitest"
 	},
 	"peerDependencies": {
-		"@sukko/sdk": "workspace:*",
+		"@sukko/sdk": "^1.0.0",
 		"react": ">=18",
 		"react-native": ">=0.73"
 	},
