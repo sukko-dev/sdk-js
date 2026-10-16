@@ -1,5 +1,15 @@
 # @sukko/sdk
 
+## 1.1.0
+
+### Minor Changes
+
+- 2db51ba: Surface the SSE reconnect-recovery control frames (`no_replay`, `replay_truncated`) on the client's existing recovery surfaces (ADR-0005).
+
+### Patch Changes
+
+- 111f55d: Add per-package README files (install, usage, docs links) so each package renders documentation on its npm page.
+
 ## 1.0.0
 
 ### Minor Changes
