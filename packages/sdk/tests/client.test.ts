@@ -1348,6 +1348,80 @@ describe("SukkoClient", () => {
 		});
 	});
 
+	describe("SSE recovery control frames (ADR-0005)", () => {
+		// A receive-only transport (SSE): canSend:false drives the handleTransportOpen reopen branch
+		// that emits the blanket per-channel possible_gap the ADR relies on.
+		class SseTransport extends MockTransport {
+			override get capabilities(): TransportCapabilities {
+				// Real SSE is receive-only: no in-band send, no in-band (un)subscribe (channels ride the
+				// connect-time URL). Every path under test gates solely on canSend.
+				return { canSend: false, canSubscribe: false, canPublish: false, canPauseReceive: false };
+			}
+		}
+
+		it("surfaces replay_truncated as a connection-level recoveryInterrupted", async () => {
+			const transport = new SseTransport();
+			const { client } = createClient({ transport });
+			const handler = vi.fn();
+			client.on("recoveryInterrupted", handler);
+			client.connect();
+			await vi.advanceTimersByTimeAsync(0);
+
+			transport.simulateMessage({ type: "replay_truncated", replayed: 3 });
+
+			expect(handler).toHaveBeenCalledOnce();
+			const err = handler.mock.calls[0][0] as RecoveryInterruptedError;
+			expect(err).toBeInstanceOf(RecoveryInterruptedError);
+			expect(err.channel).toBeUndefined(); // connection-level, not channel-scoped
+			expect(err.message).toContain("3");
+			expect(err.message).toMatch(/truncat/i);
+
+			client.disconnect();
+		});
+
+		it("does not re-signal no_replay — the blanket reopen possible_gap already covers it", async () => {
+			vi.spyOn(Math, "random").mockReturnValue(0.5);
+			const transport = new SseTransport();
+			const client = new SukkoClient({
+				transport,
+				autoConnect: true,
+				reconnect: true,
+				backoffBaseMs: 1000,
+				backoffMaxMs: 1000,
+			});
+			client.subscribe(["tenant.BTC.trade", "tenant.ETH.trade"]);
+			await vi.advanceTimersByTimeAsync(0); // first open: no blanket (nothing missed yet)
+
+			const recovery = vi.fn();
+			client.on("recoveryInterrupted", recovery);
+			const iterator = client.messages();
+
+			// Force a reopen → the blanket emits exactly one possible_gap per desired channel.
+			transport.simulateClose(1006, "reconnect");
+			await vi.advanceTimersByTimeAsync(1000);
+			const { value: g1 } = await iterator.next();
+			const { value: g2 } = await iterator.next();
+			expect((g1 as { type: string }).type).toBe("possible_gap");
+			expect((g2 as { type: string }).type).toBe("possible_gap");
+
+			// The server reports no_replay for a subset — it must add NOTHING to the stream and raise no
+			// recoveryInterrupted. The next item is the following live message, not a third possible_gap.
+			transport.simulateMessage({ type: "no_replay", channels: ["tenant.BTC.trade"] });
+			transport.simulateMessage({
+				type: "message",
+				channel: "tenant.BTC.trade",
+				ts: Date.now(),
+				data: { x: 1 },
+				pos: "1-1",
+			});
+			const { value: next } = await iterator.next();
+			expect(next).toMatchObject({ type: "message", channel: "tenant.BTC.trade" });
+			expect(recovery).not.toHaveBeenCalled();
+
+			client.disconnect();
+		});
+	});
+
 	describe("history", () => {
 		it("sends a history frame with the given limit", async () => {
 			const { client, transport } = createClient();

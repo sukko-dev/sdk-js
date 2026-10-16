@@ -953,6 +953,31 @@ export class SukkoClient extends TypedEventEmitter<SukkoClientEvents> {
 					this.emit("authError", err);
 					break;
 				}
+				case "no_replay":
+					// SSE reconnect-recovery control frame (gateway.openapi 1.0.3, ADR-0005): the server
+					// could not replay these cursor channels. Recognized but deliberately NOT re-signaled —
+					// the receive-only transport already emitted a synthetic `possible_gap` for every desired
+					// channel on this reopen (handleTransportOpen), and `no_replay ⊆ desired`, so translating
+					// it again would double-fire. Classified here (not left to `default`) because it is a
+					// defined contract frame, not an unknown/future one.
+					break;
+				case "replay_truncated": {
+					// SSE reconnect-recovery control frame (gateway.openapi 1.0.3, ADR-0005): the reconnect
+					// replay was cut short at the server cap — a prefix was delivered and a gap remains. New
+					// information the blanket `possible_gap` does not carry, and the recovery timer/deadline
+					// loop never runs on a receive-only transport, so surface it as the advisory
+					// `recoveryInterrupted` (no channel — the truncation is connection-level).
+					const t = raw as unknown as { replayed?: number };
+					const delivered =
+						typeof t.replayed === "number" ? `${t.replayed}` : "an unknown number of";
+					this.emit(
+						"recoveryInterrupted",
+						new RecoveryInterruptedError(
+							`SSE reconnect replay truncated at the server cap; ${delivered} delivered, a gap remains`,
+						),
+					);
+					break;
+				}
 				default:
 					// Unknown/future message type — drop and continue for forward-compatibility;
 					// never kill the read-pump.
