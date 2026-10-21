@@ -2,7 +2,7 @@ asyncapi: 3.0.0
 
 info:
   title: Sukko WebSocket Client API
-  version: 1.4.0
+  version: 1.4.3
   description: |
     Real-time WebSocket API for subscribing to chat events and publishing messages.
 
@@ -36,7 +36,7 @@ info:
 
     - **Admission control**: The server may reject WebSocket upgrades under high CPU (>60%), memory pressure, goroutine limits, or per-tenant connection limits.
     - **Slow client disconnection**: If the server fails to deliver 3 consecutive messages to a client (send buffer full), it disconnects with close code 1008 (Policy Violation).
-    - **Graceful shutdown**: The server sends close code 1001 (Going Away) to all clients before stopping.
+    - **Server-initiated disconnect**: Graceful shutdown and token/user revocation also close the connection with 1008 (Policy Violation).
     - **Heartbeat**: Client sends `heartbeat`, server responds with `pong` containing a timestamp.
 
     ## WebSocket Close Codes
@@ -44,8 +44,8 @@ info:
     | Code | Meaning | Trigger |
     |------|---------|---------|
     | 1000 | Normal closure | Client or server initiated clean close |
-    | 1001 | Going away | Server shutting down (graceful) |
-    | 1008 | Policy violation | Slow client disconnected after max delivery attempts |
+    | 1008 | Policy violation | Slow client disconnected after max delivery attempts; server-initiated disconnect on graceful shutdown or token/user revocation. Clients SHOULD treat 1008 as retryable with bounded backoff — a revoked credential is re-rejected at the reconnect handshake, so termination belongs to the auth layer, not this close code (ADR-0024). |
+    | 1009 | Message too big | Client sent a frame exceeding the size limit |
     | 1011 | Internal error | Unexpected server error |
     | 4000 | force_disconnect / heartbeat timeout | Direction-dependent: server-sent = operator-initiated force-disconnect via Connections Management API (`DELETE /connections/{connId}`); client-sent = client-initiated close after heartbeat (pong) timeout. Clients MUST use the close direction to disambiguate. |
 
@@ -94,27 +94,28 @@ info:
 
     ## Topic Mapping Rules
 
-    Published messages are routed to Kafka topics via **topic routing rules** configured per-tenant through the provisioning API. Each rule maps a channel suffix pattern to one or more Kafka topic suffixes.
+    Published messages are routed to Kafka topics via **topic routing rules** configured per-tenant through the provisioning API. Each rule maps a channel suffix pattern to one **ingress topic** — the topic the platform consumes, whose records are delivered to subscribers, replayed, and served as history — plus optional **egress topics** (Pro edition), which receive best-effort copies for external consumers and are never consumed by the platform.
 
     | Field | Description | Example |
     |-------|-------------|---------|
-    | `pattern` | Channel suffix glob with `*` wildcards | `rooms.*.messages` |
-    | `topics` | Array of Kafka topic suffixes (no wildcards) | `["rooms.messages"]` |
+    | `pattern` | Channel suffix pattern with segment wildcards (`**`) | `rooms.*.presence` |
+    | `ingress_topic` | Kafka topic suffix the platform consumes and delivers from | `rooms.messages` |
+    | `egress_topics` | Optional topic suffixes receiving copies — written to, never consumed | `["audit-log"]` |
 
     **Evaluation**: Rules are evaluated in order — **first match wins**. If no rule matches, the publish is rejected.
 
-    **Wildcard syntax**: `*` matches any sequence of characters including dots. For example, `rooms.*.messages` matches both `rooms.general.messages` and `rooms.eng.general.messages`. The `{}` placeholder syntax is NOT supported in routing patterns (it is only used in channel permission patterns).
+    **Wildcard syntax**: patterns match by dot-separated **segments**, not characters. `**` matches one or more segments. A bare `*` segment is accepted and normalized to `**` on storage (so it too matches one or more segments); at most one `**` is allowed per pattern. For example, `rooms.*.presence` is stored as `rooms.**.presence` and matches both `rooms.general.presence` and `rooms.eng.general.presence`. The `{}` placeholder syntax is NOT supported in routing patterns (it is only used in channel permission patterns).
 
     **Example rules**:
     ```json
     [
-      {"pattern": "*.messages", "topics": ["messages"]},
-      {"pattern": "*.typing", "topics": ["typing"]},
-      {"pattern": "rooms.*.presence", "topics": ["rooms.presence"]}
+      {"pattern": "*.messages", "ingress_topic": "messages", "priority": 0},
+      {"pattern": "*.typing", "ingress_topic": "typing", "priority": 10},
+      {"pattern": "rooms.*.presence", "ingress_topic": "rooms.presence", "egress_topics": ["audit-log"], "priority": 20}
     ]
     ```
 
-    When a client publishes to `sukko.general.messages`, the gateway strips the tenant prefix (`general.messages`), matches against the first rule (`*.messages`), and routes to Kafka topic `sukko.messages` (tenant prefix + first matching topics entry).
+    When a client publishes to `sukko.general.messages`, the gateway strips the tenant prefix (`general.messages`), matches against the first rule (`*.messages`), and writes the message to Kafka topic `{namespace}.sukko.messages` (the `{namespace}.{tenant}.{suffix}` format — namespace + tenant + the matched rule's `ingress_topic`). Subscribers receive exactly ONE copy of the message regardless of how many egress topics the rule lists — egress copies leave the platform and never re-enter delivery. The publish ack's `mid` is the ingress record's identity; egress writes happen after the ack with the producer's bounded retry (default 8 attempts, exponential backoff) — a terminally failed copy is dead-lettered and counted, never failing the publish.
 
     ## Rate Limits and Constraints
 
@@ -277,6 +278,20 @@ operations:
     description: >
       Request replay of missed messages using a persistent client ID and last-known
       pos values. The server replays up to 100 messages within a 5-second timeout.
+      Replay is scoped to the channels named in last_pos, and only those owned by the
+      connection's authenticated tenant — a channel belonging to another tenant is
+      silently ignored and never replayed. If no named channel is replayable, the
+      server returns a reconnect_ack with messages_replayed 0 (not an error).
+
+      The server also begins live delivery for those tenant-authorized last_pos
+      channels immediately, before the replay runs, so no message is lost in the seam
+      between the replay snapshot and a later subscribe. As a result, live `message`
+      frames for these channels may arrive during or right after replay and may
+      overlap replayed messages; clients deduplicate by `mid` and order by `pos`,
+      exactly as for mid-session gap replay. A subsequent explicit `subscribe` for the
+      same channels is an idempotent re-add. If last_pos names more channels than
+      WS_MAX_CHANNELS_PER_CLIENT allows, the excess new channels are skipped (a
+      legitimate client can never have held more than the limit before disconnecting).
     messages:
       - $ref: "#/channels/clientSend/messages/reconnect"
 
@@ -465,9 +480,7 @@ operations:
       Sent when a history request fails validation or encounters a storage error.
       Error codes:
         - `history_disabled`: history feature not enabled on this server (not retriable — feature is off)
-        - `not_available`: JWT expired
         - `history_not_subscribed`: client must subscribe to the channel first
-        - `history_time_range_not_supported`: from_ts/to_ts queries are not supported in v1
         - `history_invalid_limit`: limit out of range [1, MAX_HISTORY_LIMIT]
         - `history_in_progress`: history delivery already running for this channel
         - `history_storage_unavailable`: Valkey temporarily unreachable (retriable — try again after backoff)
@@ -743,7 +756,10 @@ components:
             Map of channel name to the last `pos` value received on that channel.
             Use the `pos` values from live or history messages received on each channel — persist
             them across disconnections and send them back on reconnect to resume from the correct
-            position. Do NOT construct pos values manually — `pos` is an opaque token whose internal
+            position. Each cursor is EXCLUSIVE: the record at the given `pos` is not re-delivered;
+            replay resumes with the record after it (you are telling the server the last message
+            you saw). Contrast with the live replay request, whose `from_pos` is inclusive.
+            Do NOT construct pos values manually — `pos` is an opaque token whose internal
             encoding may change between releases. Only use values received from the server.
           examples:
             - { "sukko.BTC.trade": "3-100", "sukko.ETH.trade": "5-200" }
@@ -901,9 +917,9 @@ components:
           maxLength: 64
           description: >
             Stable message identity assigned to the published message — the same `mid` subscribers
-            receive on the delivered envelope. Opaque, at most 64 characters. Omitted when the
-            publish fans out to multiple topics (one publish then produces multiple messages,
-            each with its own mid).
+            receive on the delivered envelope. Opaque, at most 64 characters. In kafka mode it is
+            the ingress record's identity and is present whether or not the matched routing rule
+            also writes egress copies (egress copies carry no delivery identity).
       examples:
         - type: publish_ack
           channel: "sukko.general.messages"
@@ -1073,6 +1089,7 @@ components:
           description: Machine-readable error code.
           enum:
             - invalid_request
+            - subscribe_limit_exceeded
         message:
           type: string
           description: Human-readable error description.
@@ -1150,8 +1167,6 @@ components:
           description: Source of the delivered history.
           enum:
             - cache
-            - kafka
-            - mixed
         truncated:
           type: boolean
           description: Present and true when delivery was cut short by a server-side timeout. Omitted entirely (not present) when false — clients must treat absence as false.
@@ -1182,9 +1197,7 @@ components:
           description: Machine-readable error code.
           enum:
             - history_disabled
-            - not_available
             - history_not_subscribed
-            - history_time_range_not_supported
             - history_invalid_limit
             - history_in_progress
             - history_storage_unavailable
@@ -1279,7 +1292,12 @@ components:
               type: string
               description: >
                 Kafka position string (format: "(partition+1)-offset") from which to start replay.
-                Typically taken from the last_pos field of a gap notification.
+                Typically taken from the last_pos field of a gap notification. The cursor is
+                INCLUSIVE: the record at `from_pos` itself is replayed first — a gap notification's
+                last_pos identifies the dropped record, so replaying from it recovers that record
+                too. Contrast with reconnect's `last_pos` cursors, which are exclusive. A position
+                outside the partition's available history is rejected with `offset_out_of_range`
+                (as a type:"error" frame) rather than silently replaying from the start.
       examples:
         - type: replay
           data:

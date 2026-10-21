@@ -1,0 +1,17 @@
+{
+  "note": "Pinned copies of the Sukko platform contracts (canonical: sukko/ws/docs). source_ref is the sukko-dev/sukko main commit that last authored each file. The L0 gate (pin.test.ts) fails when a vendored file's sha256 or version drifts from this lock. A scheduled sync job that fails when the platform's published version is newer is planned (ADR-0040), not yet shipped. To bump: re-vendor from a newer platform ref and regenerate this lock.",
+  "contracts": [
+    {
+      "file": "client-ws.asyncapi.yaml",
+      "version": "1.4.3",
+      "sha256": "17a51c637d22bde8f81b5d962b0dfd93cc8bb32bd5539f1f506994123b468f8e",
+      "source_ref": "28e6013ec028ebfa2d961e888b2f3a09292a45b7"
+    },
+    {
+      "file": "gateway.openapi.yaml",
+      "version": "1.1.0",
+      "sha256": "f710a1adad3ee22299fa617dd2741613f2f48eef6cd2e01d23346e9e7cda6980",
+      "source_ref": "6ccc5f179f9cd7646b491d5270aa693eb0a9452f"
+    }
+  ]
+}
