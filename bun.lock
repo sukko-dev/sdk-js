@@ -57,7 +57,7 @@
     },
     "packages/react": {
       "name": "@sukko/react",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "devDependencies": {
         "@sukko/sdk": "workspace:*",
         "@testing-library/react": "^16",
@@ -92,7 +92,7 @@
     },
     "packages/sdk": {
       "name": "@sukko/sdk",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "devDependencies": {
         "tsup": "^8",
         "typescript": "^5.5",
@@ -102,7 +102,7 @@
     },
     "packages/svelte": {
       "name": "@sukko/svelte",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "devDependencies": {
         "@sukko/sdk": "workspace:*",
         "svelte": "^5",
@@ -117,7 +117,7 @@
     },
     "packages/vue": {
       "name": "@sukko/vue",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "devDependencies": {
         "@sukko/sdk": "workspace:*",
         "@vue/test-utils": "^2",
@@ -134,7 +134,7 @@
     },
     "packages/websocket": {
       "name": "@sukko/websocket",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "devDependencies": {
         "@sukko/sdk": "workspace:*",
         "tsup": "^8",
@@ -147,7 +147,7 @@
     },
     "packages/websocket-node": {
       "name": "@sukko/websocket-node",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "dependencies": {
         "ws": "^8",
       },
@@ -822,7 +822,7 @@
 
     "jest-worker": ["jest-worker@29.7.0", "", { "dependencies": { "@types/node": "*", "jest-util": "^29.7.0", "merge-stream": "^2.0.0", "supports-color": "^8.0.0" } }, "sha512-eIz2msL/EzL9UFTFFx7jBTkeZfku0yUAyZZZmJ93H2TYEiroIx2PQjEXcwYtYl8zXCxb+PAmA2hLIt/6ZEkPHw=="],
 
-    "jose": ["jose@6.2.10", "", {}, "sha512-iiW7J9qRFlGxvCOIBDBDxFePQSn7ZMAnrYGhrrOo6siO/MIqwfyilLR27pkfDgUk+raLuzADS8A3S/KLBisc0g=="],
+    "jose": ["jose@6.2.13", "", {}, "sha512-7TIg10ZE1x82YediN+lcrPNvGMKge9yFHQD+Qho/b8y2adfugU3AsvvHfxV0fzyFllT6l9xCjf4RWY9g/Z9PJQ=="],
 
     "joycon": ["joycon@3.1.1", "", {}, "sha512-34wB/Y7MW7bzjKRjUKTa46I2Z7eV62Rkhva+KkopW7Qvv/OSWBqvkSY7vusOPrNuZcUG3tApvdVgNB8POj3SPw=="],
 
