@@ -33,7 +33,7 @@
 		"ws": "^8"
 	},
 	"peerDependencies": {
-		"@sukko/sdk": "^1.0.0"
+		"@sukko/sdk": "^0.1.0"
 	},
 	"devDependencies": {
 		"@sukko/sdk": "workspace:*",
