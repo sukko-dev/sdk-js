@@ -4,6 +4,7 @@
 // (see `_redact.ts`) so credentials never leak — wired into the WS/REST/auth paths as those land.
 
 import type { CloseDirection } from "./constants";
+import type { ErrorCode } from "./messages";
 
 /** Base class for every error the SDK throws. Catch this to catch anything from the SDK. */
 export class SukkoError extends Error {
@@ -90,8 +91,12 @@ export class ConflictError extends SukkoError {}
  * (→ Direct-degrade `PossibleGap`): the same `not_available` string means a replay failure on an
  * `error` frame but the Direct capability signal on a `reconnect_error` frame — disambiguated by the
  * carrying message type, never by the string alone (see recovery.ts / client.ts routing).
+ *
+ * Typed `readonly ErrorCode[]`, not `string[]`, so this hand-maintained replay subset cannot drift
+ * out of the gated `ERROR_CODES` set: if the contract drops a code from the `error` enum, any stale
+ * entry here becomes a compile error.
  */
-export const REPLAY_ERROR_CODES: readonly string[] = [
+export const REPLAY_ERROR_CODES: readonly ErrorCode[] = [
 	"not_subscribed",
 	"invalid_request",
 	"replay_in_progress",

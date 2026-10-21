@@ -16,9 +16,15 @@ makes the L0 "keep up" gate (ADR-0040) **hermetic and CI-enforceable**:
 - **`pin.test.ts`** — fails when a vendored file's sha256 or declared `info.version` drifts from
   `CONTRACTS.lock` (a hand-edit or a partial re-vendor). Tamper-evident.
 - **`coverage.test.ts`** — fails, not skips, when the contract declares a message type the SDK does
-  not model (or vice versa). Version-agnostic.
-- A scheduled **sync job** (CI) fails when the platform's *published* contract version is newer than
-  the pinned one, forcing a re-vendor. No auto-PR (the org blocks Actions from opening PRs).
+  not model (or vice versa), and — per message type — when its declared `code` enum does not exactly
+  match the SDK's modelled error codes. Version-agnostic.
+- A scheduled **sync job** (CI) that fails when the platform's *published* contract version is newer
+  than the pinned one is **planned (ADR-0040), not yet shipped**; it will not use an auto-PR (the org
+  blocks Actions from opening PRs).
+
+**L0 scope today:** message `type` discriminators and per-message error `code` enums. Other contract
+enums that are not `code` (e.g. `history_complete.source`) and the gateway OpenAPI's REST
+endpoints / HTTP error codes / SSE control frames are not yet gated — a planned extension.
 
 The `yaml` parser is a **devDependency** only — it never ships in the runtime bundle (the SDK ships
 with zero runtime dependencies).

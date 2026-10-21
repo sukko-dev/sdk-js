@@ -174,7 +174,6 @@ export interface HistoryComplete {
 
 export const HISTORY_ERROR_CODES = [
 	"history_disabled",
-	"not_available",
 	"history_not_subscribed",
 	"history_invalid_limit",
 	"history_in_progress",

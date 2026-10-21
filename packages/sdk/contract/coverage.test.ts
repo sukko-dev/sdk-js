@@ -50,33 +50,58 @@ const declared = new Set<string>();
 collectMessageTypeConsts(doc, null, declared);
 
 /**
- * Collect every error code the contract declares: the values of a schema property named `code`
- * that is an enum (`code: { enum: [...] }`) or a single const (`code: { const: "..." }`). This is
- * the authoritative WS error-code universe the SDK must model.
+ * Collect the error codes the contract declares, keyed by the ENCLOSING message type (its nearest
+ * `type: { const: "..." }` discriminator). A `code` schema that is an enum or a single const is
+ * recorded under the message it belongs to — per-message, never aggregated, because the same code
+ * string means different things on different frames (e.g. `not_available` is a replay failure on
+ * `error` but the Direct capability signal on `reconnect_error`). The SDK must model each message's
+ * code set exactly; an aggregate check is category-blind and would miss a code moving between
+ * messages.
  */
-function collectErrorCodes(node: unknown, acc: Set<string>): void {
+function collectErrorCodesByMessage(
+	node: unknown,
+	currentType: string | undefined,
+	acc: Map<string, Set<string>>,
+): void {
 	if (Array.isArray(node)) {
-		for (const item of node) collectErrorCodes(item, acc);
+		for (const item of node) collectErrorCodesByMessage(item, currentType, acc);
 		return;
 	}
 	if (node === null || typeof node !== "object") return;
 	const obj = node as Record<string, unknown>;
+	const t = obj.type as Record<string, unknown> | undefined;
+	const nextType =
+		t && typeof t === "object" && typeof t.const === "string" ? t.const : currentType;
 	const code = obj.code;
 	if (code !== null && typeof code === "object") {
 		const c = code as Record<string, unknown>;
-		if (Array.isArray(c.enum)) for (const v of c.enum) if (typeof v === "string") acc.add(v);
-		if (typeof c.const === "string") acc.add(c.const);
+		const key = nextType ?? "(no-message-type)";
+		const set = acc.get(key) ?? new Set<string>();
+		acc.set(key, set);
+		if (Array.isArray(c.enum)) for (const v of c.enum) if (typeof v === "string") set.add(v);
+		if (typeof c.const === "string") set.add(c.const);
 	}
-	for (const v of Object.values(obj)) collectErrorCodes(v, acc);
+	for (const v of Object.values(obj)) collectErrorCodesByMessage(v, nextType, acc);
 }
 
-const contractErrorCodes = new Set<string>();
-collectErrorCodes(doc, contractErrorCodes);
+const errorCodesByMessage = new Map<string, Set<string>>();
+collectErrorCodesByMessage(doc, undefined, errorCodesByMessage);
 
-// Declared-unsupported WS error codes (Smithy-style per-item IDs): contract codes the SDK
-// deliberately does not model, each with a reason. Keeps the gate honest — a new contract code
-// is RED (must be handled or declared here), never a silent miss. Empty today.
-const UNSUPPORTED_ERROR_CODES: ReadonlyArray<{ code: string; reason: string }> = [];
+// The SDK's per-message error-code arrays, each paired with its contract message type.
+const ERROR_CODE_CASES: ReadonlyArray<readonly [type: string, codes: readonly string[]]> = [
+	["publish_error", PUBLISH_ERROR_CODES],
+	["reconnect_error", RECONNECT_ERROR_CODES],
+	["error", ERROR_CODES],
+	["subscribe_error", SUBSCRIBE_ERROR_CODES],
+	["unsubscribe_error", UNSUBSCRIBE_ERROR_CODES],
+	["auth_error", AUTH_ERROR_CODES],
+	["history_error", HISTORY_ERROR_CODES],
+];
+
+// Declared-unsupported codes (Smithy-style per-item IDs), keyed by {type, code}: a contract code the
+// SDK deliberately does not model, with a reason. Keeps the gate honest — a new contract code is RED
+// (must be modelled or declared here), never a silent miss. Empty today.
+const UNSUPPORTED_ERROR_CODES: ReadonlyArray<{ type: string; code: string; reason: string }> = [];
 
 describe("AsyncAPI contract coverage", () => {
 	it("loaded a versioned contract", () => {
@@ -102,25 +127,22 @@ describe("AsyncAPI contract coverage", () => {
 	});
 });
 
-describe("WS error-code coverage", () => {
-	const modelled = new Set<string>([
-		...PUBLISH_ERROR_CODES,
-		...RECONNECT_ERROR_CODES,
-		...ERROR_CODES,
-		...SUBSCRIBE_ERROR_CODES,
-		...UNSUBSCRIBE_ERROR_CODES,
-		...AUTH_ERROR_CODES,
-		...HISTORY_ERROR_CODES,
-	]);
-
-	it("models every WS error code the contract declares (no missing, no phantom)", () => {
-		const allowed = new Set(UNSUPPORTED_ERROR_CODES.map((u) => u.code));
-		// Missing: a contract code the SDK neither models nor explicitly declares unsupported.
-		const missing = [...contractErrorCodes]
-			.filter((c) => !modelled.has(c) && !allowed.has(c))
-			.sort();
-		// Phantom: a code the SDK models that the contract no longer declares.
-		const extra = [...modelled].filter((c) => !contractErrorCodes.has(c)).sort();
-		expect({ missing, extra }).toEqual({ missing: [], extra: [] });
+describe("WS error-code coverage (per message type)", () => {
+	it("covers every error message type the contract declares (no silently-uncovered message)", () => {
+		const contractErrorMsgs = [...errorCodesByMessage.keys()].sort();
+		const covered = ERROR_CODE_CASES.map(([type]) => type).sort();
+		expect(contractErrorMsgs).toEqual(covered);
 	});
+
+	for (const [type, sdkCodes] of ERROR_CODE_CASES) {
+		it(`models ${type} codes exactly (no missing, no phantom)`, () => {
+			const allowed = new Set(
+				UNSUPPORTED_ERROR_CODES.filter((u) => u.type === type).map((u) => u.code),
+			);
+			const contractCodes = [...(errorCodesByMessage.get(type) ?? new Set<string>())]
+				.filter((c) => !allowed.has(c))
+				.sort();
+			expect([...sdkCodes].sort()).toEqual(contractCodes);
+		});
+	}
 });

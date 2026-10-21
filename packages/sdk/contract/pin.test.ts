@@ -4,9 +4,10 @@
 // by version + sha256 in CONTRACTS.lock. This test FAILS when a vendored file drifts
 // from the lock (a hand-edit, a partial re-vendor) or when its declared `info.version`
 // no longer matches the lock — so the vendored copy cannot silently diverge from what
-// it claims to be. The companion scheduled sync job (CI) is the other half: it fails
-// when the platform's PUBLISHED contract version is newer than the pinned one, forcing
-// a re-vendor. Neither uses an auto-PR (the org blocks Actions from opening PRs).
+// it claims to be. A companion scheduled sync job (CI) that fails when the platform's
+// PUBLISHED contract version is newer than the pinned one — forcing a re-vendor — is
+// PLANNED (ADR-0040), not yet shipped; it will not use an auto-PR (the org blocks
+// Actions from opening PRs).
 
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
