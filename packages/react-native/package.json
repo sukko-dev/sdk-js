@@ -1,7 +1,7 @@
 {
 	"name": "@sukko/react-native",
 	"private": true,
-	"version": "1.0.0",
+	"version": "0.1.0",
 	"description": "React Native push registration for the Sukko real-time SDK",
 	"type": "module",
 	"main": "./dist/index.cjs",
