@@ -9,6 +9,7 @@
 		"typecheck": "bun run --filter '@sukko/sdk' typecheck",
 		"format": "biome format --write .",
 		"token": "bun run scripts/generate-token.ts",
+		"contract:check": "bun run scripts/check-contract-freshness.ts",
 		"ci:version": "changeset version && bun update && bun run format",
 		"ci:publish": "bun run build && changeset publish",
 		"prepare": "git config core.hooksPath .githooks"
