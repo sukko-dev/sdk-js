@@ -65,18 +65,20 @@ export interface PublishAck {
 	readonly mid?: string;
 }
 
-export type PublishErrorCode =
-	| "not_available"
-	| "invalid_request"
-	| "invalid_channel"
-	| "message_too_large"
-	| "rate_limited"
-	| "publish_failed"
-	| "forbidden"
-	| "topic_not_provisioned"
-	| "service_unavailable"
-	| "no_routing_rules"
-	| "no_matching_route";
+export const PUBLISH_ERROR_CODES = [
+	"not_available",
+	"invalid_request",
+	"invalid_channel",
+	"message_too_large",
+	"rate_limited",
+	"publish_failed",
+	"forbidden",
+	"topic_not_provisioned",
+	"service_unavailable",
+	"no_routing_rules",
+	"no_matching_route",
+] as const;
+export type PublishErrorCode = (typeof PUBLISH_ERROR_CODES)[number];
 
 export interface PublishError {
 	type: "publish_error";
@@ -91,7 +93,8 @@ export interface ReconnectAck {
 	message: string;
 }
 
-export type ReconnectErrorCode = "invalid_request" | "not_available" | "replay_failed";
+export const RECONNECT_ERROR_CODES = ["invalid_request", "not_available", "replay_failed"] as const;
+export type ReconnectErrorCode = (typeof RECONNECT_ERROR_CODES)[number];
 
 export interface ReconnectError {
 	type: "reconnect_error";
@@ -104,15 +107,17 @@ export interface Pong {
 	ts: number; // Unix ms
 }
 
-export type ErrorCode =
-	| "invalid_json"
-	| "invalid_request"
-	| "not_subscribed"
-	| "replay_in_progress"
-	| "replay_rate_limited"
-	| "offset_out_of_range"
-	| "replay_failed"
-	| "not_available";
+export const ERROR_CODES = [
+	"invalid_json",
+	"invalid_request",
+	"not_subscribed",
+	"replay_in_progress",
+	"replay_rate_limited",
+	"offset_out_of_range",
+	"replay_failed",
+	"not_available",
+] as const;
+export type ErrorCode = (typeof ERROR_CODES)[number];
 
 export interface ErrorMessage {
 	type: "error";
@@ -121,15 +126,21 @@ export interface ErrorMessage {
 	message: string;
 }
 
+export const SUBSCRIBE_ERROR_CODES = ["invalid_request", "subscribe_limit_exceeded"] as const;
+export type SubscribeErrorCode = (typeof SUBSCRIBE_ERROR_CODES)[number];
+
 export interface SubscribeError {
 	type: "subscribe_error";
-	code: "invalid_request";
+	code: SubscribeErrorCode;
 	message: string;
 }
 
+export const UNSUBSCRIBE_ERROR_CODES = ["invalid_request"] as const;
+export type UnsubscribeErrorCode = (typeof UNSUBSCRIBE_ERROR_CODES)[number];
+
 export interface UnsubscribeError {
 	type: "unsubscribe_error";
-	code: "invalid_request";
+	code: UnsubscribeErrorCode;
 	message: string;
 }
 
@@ -139,12 +150,14 @@ export interface AuthAck {
 	data: { exp: number };
 }
 
-export type AuthErrorCode =
-	| "invalid_token"
-	| "token_expired"
-	| "tenant_mismatch"
-	| "rate_limited"
-	| "not_available";
+export const AUTH_ERROR_CODES = [
+	"invalid_token",
+	"token_expired",
+	"tenant_mismatch",
+	"rate_limited",
+	"not_available",
+] as const;
+export type AuthErrorCode = (typeof AUTH_ERROR_CODES)[number];
 
 export interface AuthError {
 	type: "auth_error";
@@ -159,16 +172,17 @@ export interface HistoryComplete {
 	truncated?: boolean; // absent = false
 }
 
-export type HistoryErrorCode =
-	| "history_disabled"
-	| "not_available"
-	| "history_not_subscribed"
-	| "history_time_range_not_supported"
-	| "history_invalid_limit"
-	| "history_in_progress"
-	| "history_storage_unavailable"
-	| "history_invalid_channel"
-	| "history_invalid_request";
+export const HISTORY_ERROR_CODES = [
+	"history_disabled",
+	"not_available",
+	"history_not_subscribed",
+	"history_invalid_limit",
+	"history_in_progress",
+	"history_storage_unavailable",
+	"history_invalid_channel",
+	"history_invalid_request",
+] as const;
+export type HistoryErrorCode = (typeof HISTORY_ERROR_CODES)[number];
 
 export interface HistoryError {
 	type: "history_error";

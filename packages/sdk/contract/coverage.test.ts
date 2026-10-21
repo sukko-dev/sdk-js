@@ -9,7 +9,17 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
-import { CLIENT_MESSAGE_TYPES, SERVER_MESSAGE_TYPES } from "../src/messages";
+import {
+	AUTH_ERROR_CODES,
+	CLIENT_MESSAGE_TYPES,
+	ERROR_CODES,
+	HISTORY_ERROR_CODES,
+	PUBLISH_ERROR_CODES,
+	RECONNECT_ERROR_CODES,
+	SERVER_MESSAGE_TYPES,
+	SUBSCRIBE_ERROR_CODES,
+	UNSUBSCRIBE_ERROR_CODES,
+} from "../src/messages";
 
 const contractPath =
 	process.env.SUKKO_ASYNCAPI_PATH ??
@@ -39,6 +49,35 @@ function collectMessageTypeConsts(node: unknown, keyOfNode: string | null, acc: 
 const declared = new Set<string>();
 collectMessageTypeConsts(doc, null, declared);
 
+/**
+ * Collect every error code the contract declares: the values of a schema property named `code`
+ * that is an enum (`code: { enum: [...] }`) or a single const (`code: { const: "..." }`). This is
+ * the authoritative WS error-code universe the SDK must model.
+ */
+function collectErrorCodes(node: unknown, acc: Set<string>): void {
+	if (Array.isArray(node)) {
+		for (const item of node) collectErrorCodes(item, acc);
+		return;
+	}
+	if (node === null || typeof node !== "object") return;
+	const obj = node as Record<string, unknown>;
+	const code = obj.code;
+	if (code !== null && typeof code === "object") {
+		const c = code as Record<string, unknown>;
+		if (Array.isArray(c.enum)) for (const v of c.enum) if (typeof v === "string") acc.add(v);
+		if (typeof c.const === "string") acc.add(c.const);
+	}
+	for (const v of Object.values(obj)) collectErrorCodes(v, acc);
+}
+
+const contractErrorCodes = new Set<string>();
+collectErrorCodes(doc, contractErrorCodes);
+
+// Declared-unsupported WS error codes (Smithy-style per-item IDs): contract codes the SDK
+// deliberately does not model, each with a reason. Keeps the gate honest — a new contract code
+// is RED (must be handled or declared here), never a silent miss. Empty today.
+const UNSUPPORTED_ERROR_CODES: ReadonlyArray<{ code: string; reason: string }> = [];
+
 describe("AsyncAPI contract coverage", () => {
 	it("loaded a versioned contract", () => {
 		// Version-agnostic: the exact version + checksum are pinned by pin.test.ts.
@@ -60,5 +99,28 @@ describe("AsyncAPI contract coverage", () => {
 
 	it("has no `force_disconnect` message type — it is close code 4000, not a message", () => {
 		expect(declared.has("force_disconnect")).toBe(false);
+	});
+});
+
+describe("WS error-code coverage", () => {
+	const modelled = new Set<string>([
+		...PUBLISH_ERROR_CODES,
+		...RECONNECT_ERROR_CODES,
+		...ERROR_CODES,
+		...SUBSCRIBE_ERROR_CODES,
+		...UNSUBSCRIBE_ERROR_CODES,
+		...AUTH_ERROR_CODES,
+		...HISTORY_ERROR_CODES,
+	]);
+
+	it("models every WS error code the contract declares (no missing, no phantom)", () => {
+		const allowed = new Set(UNSUPPORTED_ERROR_CODES.map((u) => u.code));
+		// Missing: a contract code the SDK neither models nor explicitly declares unsupported.
+		const missing = [...contractErrorCodes]
+			.filter((c) => !modelled.has(c) && !allowed.has(c))
+			.sort();
+		// Phantom: a code the SDK models that the contract no longer declares.
+		const extra = [...modelled].filter((c) => !contractErrorCodes.has(c)).sort();
+		expect({ missing, extra }).toEqual({ missing: [], extra: [] });
 	});
 });
