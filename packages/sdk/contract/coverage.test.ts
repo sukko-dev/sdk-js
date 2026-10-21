@@ -1,8 +1,9 @@
-// Contract-coverage test. Parses the vendored, version-pinned AsyncAPI v1.4.0
-// document and asserts every message `type` discriminator it declares has a typed model in
-// `messages.ts` — and vice versa. Hermetic: it reads the vendored copy so CI (single-checkout) can
-// FAIL, not skip, when a message type is added/renamed. `SUKKO_ASYNCAPI_PATH` overrides the path for
-// local runs against a live `../sukko` checkout.
+// Contract-coverage test. Parses the vendored AsyncAPI document and asserts every message
+// `type` discriminator it declares has a typed model in `messages.ts` — and vice versa.
+// Hermetic: it reads the vendored copy so CI (single-checkout) can FAIL, not skip, when a
+// message type is added/renamed. The vendored file is version-pinned + checksummed by
+// CONTRACTS.lock (enforced by pin.test.ts); this coverage test is version-agnostic.
+// `SUKKO_ASYNCAPI_PATH` overrides the path for local runs against a live `../sukko` checkout.
 
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -12,7 +13,7 @@ import { CLIENT_MESSAGE_TYPES, SERVER_MESSAGE_TYPES } from "../src/messages";
 
 const contractPath =
 	process.env.SUKKO_ASYNCAPI_PATH ??
-	fileURLToPath(new URL("./client-ws.asyncapi.v1.4.0.yaml", import.meta.url));
+	fileURLToPath(new URL("./client-ws.asyncapi.yaml", import.meta.url));
 
 const doc = parse(readFileSync(contractPath, "utf8")) as unknown;
 
@@ -38,9 +39,10 @@ function collectMessageTypeConsts(node: unknown, keyOfNode: string | null, acc: 
 const declared = new Set<string>();
 collectMessageTypeConsts(doc, null, declared);
 
-describe("AsyncAPI v1.4.0 contract coverage", () => {
-	it("loaded the version-pinned contract", () => {
-		expect((doc as { info?: { version?: string } }).info?.version).toBe("1.4.0");
+describe("AsyncAPI contract coverage", () => {
+	it("loaded a versioned contract", () => {
+		// Version-agnostic: the exact version + checksum are pinned by pin.test.ts.
+		expect((doc as { info?: { version?: string } }).info?.version).toMatch(/^\d+\.\d+\.\d+$/);
 	});
 
 	it("models exactly the message types the contract declares (no missing, no extra)", () => {

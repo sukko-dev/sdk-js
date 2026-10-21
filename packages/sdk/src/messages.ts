@@ -1,6 +1,6 @@
-// Wire message models — AsyncAPI v1.4.0 (`contract/client-ws.asyncapi.v1.4.0.yaml`). Wire `type`
-// strings, field names, and error codes match the contract EXACTLY (§I). Enforced by the
-// contract-coverage test (`contract/coverage.test.ts`).
+// Wire message models — the Sukko client AsyncAPI (`contract/client-ws.asyncapi.yaml`, version-pinned
+// by `contract/CONTRACTS.lock`). Wire `type` strings, field names, and error codes match the contract
+// EXACTLY (§I). Enforced by the contract-coverage test (`contract/coverage.test.ts`).
 //
 // Modeling principle: the SDK models the fields it CONSUMES. Opaque position
 // cursors (`pos`, `last_pos`, `from_pos`) are kept — the SDK stores and echoes them, never parses
