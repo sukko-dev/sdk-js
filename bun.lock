@@ -57,7 +57,7 @@
     },
     "packages/react": {
       "name": "@sukko/react",
-      "version": "1.0.0",
+      "version": "0.1.0",
       "devDependencies": {
         "@sukko/sdk": "workspace:*",
         "@testing-library/react": "^16",
@@ -71,13 +71,13 @@
         "vitest": "^3",
       },
       "peerDependencies": {
-        "@sukko/sdk": "workspace:*",
+        "@sukko/sdk": "^0.1.0",
         "react": ">=18",
       },
     },
     "packages/react-native": {
       "name": "@sukko/react-native",
-      "version": "1.0.0",
+      "version": "0.1.0",
       "devDependencies": {
         "@sukko/sdk": "workspace:*",
         "tsup": "^8",
@@ -85,14 +85,14 @@
         "vitest": "^3",
       },
       "peerDependencies": {
-        "@sukko/sdk": "workspace:*",
+        "@sukko/sdk": "^0.1.0",
         "react": ">=18",
         "react-native": ">=0.73",
       },
     },
     "packages/sdk": {
       "name": "@sukko/sdk",
-      "version": "1.0.0",
+      "version": "0.1.0",
       "devDependencies": {
         "tsup": "^8",
         "typescript": "^5.5",
@@ -102,7 +102,7 @@
     },
     "packages/svelte": {
       "name": "@sukko/svelte",
-      "version": "1.0.0",
+      "version": "0.1.0",
       "devDependencies": {
         "@sukko/sdk": "workspace:*",
         "svelte": "^5",
@@ -111,13 +111,13 @@
         "vitest": "^3",
       },
       "peerDependencies": {
-        "@sukko/sdk": "workspace:*",
+        "@sukko/sdk": "^0.1.0",
         "svelte": ">=5",
       },
     },
     "packages/vue": {
       "name": "@sukko/vue",
-      "version": "1.0.0",
+      "version": "0.1.0",
       "devDependencies": {
         "@sukko/sdk": "workspace:*",
         "@vue/test-utils": "^2",
@@ -128,13 +128,13 @@
         "vue": "^3.5",
       },
       "peerDependencies": {
-        "@sukko/sdk": "workspace:*",
+        "@sukko/sdk": "^0.1.0",
         "vue": ">=3.3",
       },
     },
     "packages/websocket": {
       "name": "@sukko/websocket",
-      "version": "1.0.0",
+      "version": "0.1.0",
       "devDependencies": {
         "@sukko/sdk": "workspace:*",
         "tsup": "^8",
@@ -142,12 +142,12 @@
         "vitest": "^3",
       },
       "peerDependencies": {
-        "@sukko/sdk": "workspace:*",
+        "@sukko/sdk": "^0.1.0",
       },
     },
     "packages/websocket-node": {
       "name": "@sukko/websocket-node",
-      "version": "1.0.0",
+      "version": "0.1.0",
       "dependencies": {
         "ws": "^8",
       },
@@ -159,7 +159,7 @@
         "vitest": "^3",
       },
       "peerDependencies": {
-        "@sukko/sdk": "workspace:*",
+        "@sukko/sdk": "^0.1.0",
       },
     },
   },
