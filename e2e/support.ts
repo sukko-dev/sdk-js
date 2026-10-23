@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
-import { SukkoClient } from "@sukko/sdk";
+import { SseTransport, SukkoClient } from "@sukko/sdk";
 import type { ConnectionState, SukkoClientEvents } from "@sukko/sdk";
 import { WebSocketNodeTransport } from "@sukko/websocket-node";
 
@@ -11,11 +11,19 @@ export interface Fixture {
 	token: string;
 	apiKey: string;
 	channel: string;
-	composeProject: string; // compose project name, so tests can bounce a service
+	composeProject?: string; // compose project name, so tests can bounce a service (WS cells only)
+	edition?: string; // the stack's license edition — Pro-gated tests gate on it
 }
 
 export function loadFixture(): Fixture {
 	return JSON.parse(readFileSync(new URL("./.fixture.json", import.meta.url), "utf8")) as Fixture;
+}
+
+// isPro reports whether the live stack is Pro+ — Pro-gated transports (SSE, Web Push) only
+// work there, so their tests skip otherwise. The Community nightly leaves edition "community"
+// (or unset), so those tests skip; the source-built Pro grid cells set it to pro/enterprise.
+export function isPro(fx: Fixture): boolean {
+	return fx.edition === "pro" || fx.edition === "enterprise";
 }
 
 // makeClient builds a client over the Node WebSocket transport and tracks it so a test's
@@ -30,9 +38,39 @@ export function makeClient(opts: { url: string; token?: string; apiKey?: string 
 	tracked.push(client);
 	return client;
 }
+// makeSseClient builds a client over the receive-only SSE transport (and tracks it for
+// disconnectAll). `url` is the gateway's HTTP base — the transport opens `GET {url}/sse`.
+// SSE channels are a required, connect-time subscription, so they are passed at
+// construction (and auth goes on the transport, which makes the authed GET). SSE cannot
+// publish, so a WS client (makeClient) does the publishing in these tests.
+export function makeSseClient(opts: {
+	url: string;
+	channels: string[];
+	token?: string;
+	apiKey?: string;
+}): SukkoClient {
+	const client = new SukkoClient({
+		transport: new SseTransport({
+			url: opts.url,
+			channels: opts.channels,
+			token: opts.token,
+			apiKey: opts.apiKey,
+		}),
+		token: opts.token,
+		apiKey: opts.apiKey,
+	});
+	tracked.push(client);
+	return client;
+}
 export function disconnectAll(): void {
 	for (const client of tracked) client.disconnect();
 	tracked.length = 0;
+}
+
+// httpBase turns the fixture's ws(s) URL into the gateway's HTTP(S) base the SSE transport
+// needs (ws://host:port/ws → http://host:port), dropping the WebSocket path.
+export function httpBase(wsUrl: string): string {
+	return wsUrl.replace(/^ws(s?):\/\//, "http$1://").replace(/\/ws\/?$/, "");
 }
 
 // once resolves with the first payload of a client event — used to await the server's acks
