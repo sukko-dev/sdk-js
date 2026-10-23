@@ -5,7 +5,9 @@ import { defineConfig } from "vitest/config";
 // from flaking the assertions.
 export default defineConfig({
 	test: {
-		include: ["**/*.test.ts"],
+		// Top-level only: the Community-direct suite. The kafka/ cell has its own config and
+		// backend, run separately (SUKKO_E2E_BACKEND=kafka), so it is excluded here.
+		include: ["*.test.ts"],
 		testTimeout: 30_000,
 		hookTimeout: 30_000,
 		// Files run one at a time: they share one gateway, and the reconnect test bounces it —
