@@ -1,0 +1,60 @@
+name: SDK E2E (live)
+
+# ADR-0040 Tier2 (live): drives the REAL SDK against the LATEST RELEASED platform — the
+# published GHCR images, verified by the committed prod-signed Community license — not a
+# source build. It is Docker-heavy (image pulls + a booted stack) and the regressions it
+# catches come from PLATFORM releases, which an sdk-js pull_request never sees. So it runs
+# nightly and on demand, NOT on every PR; a PR labeled `run-e2e` opts in (e.g. when the
+# change touches the suite). The fast CI gate (lint + build + unit tests) excludes it.
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 6 * * *" # ~06:00 UTC daily, against the latest released images
+  pull_request:
+    types: [opened, synchronize, reopened, labeled]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sdk-e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  e2e:
+    name: Live (released images)
+    # On a PR, run only when explicitly labeled `run-e2e`; dispatch and the nightly always run.
+    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'run-e2e')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout sdk-js
+        uses: actions/checkout@v6
+
+      # e2e/run.sh builds the sukko CLI (the fixture tool that mints the ES256 client token)
+      # from a checkout it resolves at .sources/cli. Public repo — no token needed.
+      - name: Checkout sukko CLI
+        uses: actions/checkout@v6
+        with:
+          repository: sukko-dev/cli
+          path: .sources/cli
+
+      - name: Set up Go (to build the CLI)
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: .sources/cli/go.mod
+          cache-dependency-path: .sources/cli/go.sum
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install workspace
+        run: bun install --frozen-lockfile
+
+      # ubuntu-latest ships Docker. run.sh pulls the latest released images, boots a
+      # Community-direct stack with the committed prod Community key, provisions a fixture via
+      # the CLI, runs the suite, and tears the stack down.
+      - name: Run SDK e2e
+        run: bash e2e/run.sh
