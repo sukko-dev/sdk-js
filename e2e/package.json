@@ -1,0 +1,19 @@
+{
+	"name": "@sukko/e2e",
+	"version": "0.0.0",
+	"private": true,
+	"type": "module",
+	"description": "Live end-to-end tests: the real SDK driven against a released Sukko stack (ADR-0040 Tier2).",
+	"scripts": {
+		"test": "vitest run"
+	},
+	"dependencies": {
+		"@sukko/sdk": "workspace:*",
+		"@sukko/websocket-node": "workspace:*"
+	},
+	"devDependencies": {
+		"@types/node": "^20",
+		"typescript": "^5.5",
+		"vitest": "^3"
+	}
+}
