@@ -4,6 +4,7 @@ import {
 	type Fixture,
 	disconnectAll,
 	httpBase,
+	isPro,
 	loadFixture,
 	makeClient,
 	makeSseClient,
@@ -21,7 +22,11 @@ beforeAll(() => {
 });
 afterEach(disconnectAll);
 
-test("SSE subscribe→receive against a live Pro gateway", async () => {
+test("SSE subscribe→receive against a live Pro gateway", async (ctx) => {
+	// SSE transport is Pro-gated — skip on a Community stack (e.g. this repo's nightly), where
+	// the SSE route is refused. The source-built grid cell sets edition pro/enterprise.
+	if (!isPro(fx)) ctx.skip();
+
 	// Subscriber over SSE: subscribe() opens the receive-only stream (no explicit connect()).
 	// Register the message handler and the connected-state wait BEFORE publishing, so there
 	// is no publish-before-subscribe race.

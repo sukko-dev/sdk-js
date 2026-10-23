@@ -11,11 +11,19 @@ export interface Fixture {
 	token: string;
 	apiKey: string;
 	channel: string;
-	composeProject: string; // compose project name, so tests can bounce a service
+	composeProject?: string; // compose project name, so tests can bounce a service (WS cells only)
+	edition?: string; // the stack's license edition — Pro-gated tests gate on it
 }
 
 export function loadFixture(): Fixture {
 	return JSON.parse(readFileSync(new URL("./.fixture.json", import.meta.url), "utf8")) as Fixture;
+}
+
+// isPro reports whether the live stack is Pro+ — Pro-gated transports (SSE, Web Push) only
+// work there, so their tests skip otherwise. The Community nightly leaves edition "community"
+// (or unset), so those tests skip; the source-built Pro grid cells set it to pro/enterprise.
+export function isPro(fx: Fixture): boolean {
+	return fx.edition === "pro" || fx.edition === "enterprise";
 }
 
 // makeClient builds a client over the Node WebSocket transport and tracks it so a test's
