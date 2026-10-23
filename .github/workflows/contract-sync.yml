@@ -1,0 +1,27 @@
+# Contract freshness — the PR-free "keep up" half of the L0 contract gate (ADR-0040).
+#
+# pin.test.ts (in the normal CI) proves the vendored bytes match CONTRACTS.lock. This scheduled job
+# proves the LOCK is not stale: it fetches each platform contract from the canonical upstream repo
+# and FAILS when upstream's published `info.version` is newer than the pinned one, so a stale
+# vendored copy surfaces as a red run rather than drifting silently. No auto-PR (the org blocks
+# Actions from opening PRs) — the red job is the signal to re-vendor.
+name: Contract freshness
+
+on:
+  schedule:
+    - cron: "17 6 * * *" # daily, 06:17 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      # The script uses only Node builtins + global fetch, so no `bun install` is needed.
+      - run: bun run contract:check
