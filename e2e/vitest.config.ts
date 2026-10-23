@@ -8,5 +8,8 @@ export default defineConfig({
 		include: ["**/*.test.ts"],
 		testTimeout: 30_000,
 		hookTimeout: 30_000,
+		// Files run one at a time: they share one gateway, and the reconnect test bounces it —
+		// parallel files would have their connections dropped mid-flight.
+		fileParallelism: false,
 	},
 });

@@ -54,9 +54,15 @@ if [ -z "$TOKEN" ]; then
   echo "ERROR: could not mint a client token" >&2
   exit 1
 fi
+# An API key (its full value is returned only on creation) for the api-key auth test.
+APIKEY="$(cd "$WORK" && "$SUKKO" api-keys create --tenant demo --name e2e-sdk -o json 2>/dev/null | grep -oE '"key_id": *"[^"]+"' | head -1 | sed -E 's/.*"key_id": *"([^"]+)".*/\1/')"
+if [ -z "$APIKEY" ]; then
+  echo "ERROR: could not mint an api key" >&2
+  exit 1
+fi
 
 cat > e2e/.fixture.json <<EOF
-{"wsUrl":"ws://localhost:13000/ws","token":"$TOKEN","channel":"demo.e2e"}
+{"wsUrl":"ws://localhost:13000/ws","token":"$TOKEN","apiKey":"$APIKEY","channel":"demo.e2e","composeProject":"$COMPOSE_PROJECT_NAME"}
 EOF
 
 # --- 4. build the SDK packages the suite imports, then run it --------------------------
