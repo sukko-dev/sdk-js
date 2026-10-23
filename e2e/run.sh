@@ -12,6 +12,11 @@
 set -euo pipefail
 cd "$(dirname "$0")/.." # repo root
 
+# Backend cell, via SUKKO_E2E_BACKEND: "direct" (default — the Community-direct suite) or
+# "kafka" (the gap→replay recovery cell). Kafka is ADR-0009 ungated, so it still runs on the
+# released images + the committed Community key — only the message backend changes.
+BACKEND="${SUKKO_E2E_BACKEND:-direct}"
+
 # Committed prod-signed Community license — NOT a secret (the free tier unlocks nothing
 # gated). It verifies against the production public key embedded in the published images;
 # source of truth is the sukko platform's taskfiles/e2e.yml. NEVER commit a Pro/Enterprise key.
@@ -41,7 +46,12 @@ trap cleanup EXIT
 echo "==> booting the latest released stack (published GHCR images + committed Community key)"
 (
   cd "$WORK"
-  "$SUKKO" init --defaults
+  if [ "$BACKEND" = kafka ]; then
+    # init prompts for the message backend then observability; answer kafka + no.
+    printf 'kafka\nno\n' | "$SUKKO" init
+  else
+    "$SUKKO" init --defaults
+  fi
   "$SUKKO" license set "$COMMUNITY_LICENSE_KEY"
   "$SUKKO" up --pull # pull the latest published images, not a source build
 )
@@ -68,6 +78,10 @@ EOF
 # --- 4. build the SDK packages the suite imports, then run it --------------------------
 echo "==> building SDK packages"
 bun run --filter '@sukko/sdk' --filter '@sukko/websocket-node' build >/dev/null
-echo "==> running the live e2e suite"
+echo "==> running the live e2e suite ($BACKEND)"
 # NOT exec: the EXIT trap (stack teardown) must still fire when the suite exits, pass or fail.
-bun run --filter '@sukko/e2e' test "$@"
+if [ "$BACKEND" = kafka ]; then
+  ( cd e2e/kafka && bunx vitest run "$@" ) # the recovery cell, scoped to its own config
+else
+  bun run --filter '@sukko/e2e' test "$@"
+fi
