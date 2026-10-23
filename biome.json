@@ -29,7 +29,15 @@
 		}
 	},
 	"files": {
-		"ignore": ["node_modules", "dist", "coverage", "*.d.ts", "*.d.cts", "**/contract/vectors/**"]
+		"ignore": [
+			"node_modules",
+			"dist",
+			"coverage",
+			"*.d.ts",
+			"*.d.cts",
+			"**/contract/vectors/**",
+			"e2e/.fixture.json"
+		]
 	},
 	"overrides": [
 		{
