@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { SukkoClient } from "@sukko/sdk";
 import type { ConnectionState, SukkoClientEvents } from "@sukko/sdk";
@@ -10,6 +11,7 @@ export interface Fixture {
 	token: string;
 	apiKey: string;
 	channel: string;
+	composeProject: string; // compose project name, so tests can bounce a service
 }
 
 export function loadFixture(): Fixture {
@@ -64,4 +66,41 @@ export function withTimeout<T>(promise: Promise<T>, ms: number, what: string): P
 			setTimeout(() => reject(new Error(`timed out waiting for ${what}`)), ms),
 		),
 	]);
+}
+
+// waitForReconnect resolves when the client reconnects — a "connected" that follows a
+// "reconnecting". Attach it BEFORE the disruption so the cycle is not missed.
+export function waitForReconnect(client: SukkoClient): Promise<void> {
+	return new Promise((resolve) => {
+		let sawReconnecting = false;
+		client.on("stateChange", (state: ConnectionState) => {
+			if (state === "reconnecting") sawReconnecting = true;
+			else if (state === "connected" && sawReconnecting) resolve();
+		});
+	});
+}
+
+// bounceGateway restarts the gateway container, dropping every connection — the real-world
+// disruption that exercises the client's reconnect path. The compose project comes from the
+// fixture; compose names the container "<project>-ws-gateway-1".
+export function bounceGateway(composeProject: string): void {
+	execFileSync("docker", ["restart", `${composeProject}-ws-gateway-1`], { stdio: "ignore" });
+}
+
+// delay resolves after ms — used to pace publish retries, not to mask a race.
+export function delay(ms: number): Promise<void> {
+	return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// waitUntil polls pred() until it is true, rejecting at the deadline.
+export function waitUntil(pred: () => boolean, ms: number, what: string): Promise<void> {
+	return new Promise((resolve, reject) => {
+		const start = Date.now();
+		const tick = () => {
+			if (pred()) return resolve();
+			if (Date.now() - start > ms) return reject(new Error(`timed out waiting for ${what}`));
+			setTimeout(tick, 100);
+		};
+		tick();
+	});
 }

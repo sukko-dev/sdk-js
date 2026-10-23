@@ -62,7 +62,7 @@ if [ -z "$APIKEY" ]; then
 fi
 
 cat > e2e/.fixture.json <<EOF
-{"wsUrl":"ws://localhost:13000/ws","token":"$TOKEN","apiKey":"$APIKEY","channel":"demo.e2e"}
+{"wsUrl":"ws://localhost:13000/ws","token":"$TOKEN","apiKey":"$APIKEY","channel":"demo.e2e","composeProject":"$COMPOSE_PROJECT_NAME"}
 EOF
 
 # --- 4. build the SDK packages the suite imports, then run it --------------------------
