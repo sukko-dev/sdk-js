@@ -11,7 +11,9 @@ afterEach(disconnectAll);
 // restPublish is the awaitable HTTP publish path — it needs no live WebSocket to send. It
 // must resolve (the gateway accepted the publish) and the message must reach a WS subscriber.
 test("REST publish: an awaitable HTTP publish is delivered to a WS subscriber", async () => {
-	const channel = "demo.e2e-rest";
+	// Fixture-derived channel; single-segment suffix stays under the fixture's wildcard rules
+	// (see api-key.test.ts). Runs on both the SDK's run.sh demo tenant and the sukko grid.
+	const channel = `${fx.channel}-rest`;
 
 	const subscriber = makeClient({ url: fx.wsUrl, token: fx.token });
 	const delivered = once(subscriber, "message");

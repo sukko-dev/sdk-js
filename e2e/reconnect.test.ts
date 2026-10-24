@@ -22,8 +22,24 @@ afterEach(disconnectAll);
 // Bounces the gateway mid-session: the client must reconnect (reconnecting → connected) and
 // resume delivery — the SDK restores its subscriptions on reconnect, so a post-bounce publish
 // still reaches the subscriber.
-test("reconnects and resumes delivery after the gateway drops", async () => {
-	const channel = "demo.e2e-reconnect";
+test("reconnects and resumes delivery after the gateway drops", async (ctx) => {
+	// This test bounces the gateway *container*, so it needs the compose project name to target
+	// it (see bounceGateway). A fixture without composeProject — e.g. the sukko grid's cell,
+	// which does not expose it — can't bounce, so skip loudly rather than `docker restart`ing a
+	// container named "undefined-ws-gateway-1". Mirrors sse.test.ts's isPro gate.
+	const { composeProject } = fx;
+	if (!composeProject) {
+		// ctx.skip() resolves to vitest's `(note?): never` overload, which narrows composeProject
+		// to string below; the note makes the grid skip self-explaining in the vitest output.
+		ctx.skip(
+			"fixture has no composeProject — the reconnect test needs docker to bounce the gateway",
+		);
+		return;
+	}
+
+	// Fixture-derived channel; single-segment suffix stays under the fixture's wildcard rules
+	// (see api-key.test.ts).
+	const channel = `${fx.channel}-reconnect`;
 
 	const subscriber = makeClient({ url: fx.wsUrl, token: fx.token });
 	let subAcks = 0;
@@ -36,7 +52,7 @@ test("reconnects and resumes delivery after the gateway drops", async () => {
 	await waitUntil(() => subAcks >= 1, 15_000, "initial subscriptionAck");
 
 	// Drop every connection by restarting the gateway; the client must come back.
-	bounceGateway(fx.composeProject);
+	bounceGateway(composeProject);
 	await withTimeout(reconnected, 45_000, "reconnect (reconnecting→connected)");
 
 	// Delivery must resume. Retry the publish until one lands, so the assertion does not race
