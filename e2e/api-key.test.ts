@@ -19,7 +19,11 @@ afterEach(disconnectAll);
 // Proves the gateway accepts API-key auth on the WebSocket path (not just JWTs): a
 // key-authenticated subscriber connects, subscribes, and receives a published message.
 test("API-key auth: a key-authed subscriber receives a published message", async () => {
-	const channel = "demo.e2e-apikey";
+	// Derive the channel from the fixture so the test runs on any provisioned tenant (the
+	// SDK's own run.sh demo tenant AND the sukko grid's throwaway tenant). The suffix stays a
+	// single segment — `-` is not a channel separator — so the fixture's wildcard rules
+	// (e.g. `general.*`) still authorize it. Mirrors sdk-go's `envChannel + "-apikey"`.
+	const channel = `${fx.channel}-apikey`;
 
 	const subscriber = makeClient({ url: fx.wsUrl, apiKey: fx.apiKey });
 	const delivered = once(subscriber, "message");
