@@ -24,9 +24,9 @@ afterEach(disconnectAll);
 // still reaches the subscriber.
 test("reconnects and resumes delivery after the gateway drops", async (ctx) => {
 	// This test bounces the gateway *container*, so it needs the compose project name to target
-	// it (see bounceGateway). A fixture without composeProject — e.g. the sukko grid's cell,
-	// which does not expose it — can't bounce, so skip loudly rather than `docker restart`ing a
-	// container named "undefined-ws-gateway-1". Mirrors sse.test.ts's isPro gate.
+	// it (see bounceGateway). Both the SDK's own run.sh and the sukko grid cell provide
+	// composeProject; the guard skips loudly for any ad-hoc fixture that omits it, rather than
+	// `docker restart`ing a container named "undefined-ws-gateway-1". Mirrors sse.test.ts's isPro gate.
 	const { composeProject } = fx;
 	if (!composeProject) {
 		// ctx.skip() resolves to vitest's `(note?): never` overload, which narrows composeProject
