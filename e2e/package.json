@@ -1,6 +1,6 @@
 {
 	"name": "@sukko/e2e",
-	"version": "0.0.0",
+	"version": "0.0.1",
 	"private": true,
 	"type": "module",
 	"description": "Live end-to-end tests: the real SDK driven against a released Sukko stack (ADR-0040 Tier2).",
